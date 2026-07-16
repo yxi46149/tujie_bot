@@ -23,7 +23,7 @@
 PowerShell：
 
 ```powershell
-cd C:\path\to\chaochao_bot
+cd C:\path\to\tujie_bot
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
@@ -107,4 +107,3 @@ CODE-003
 ```powershell
 python -m unittest discover -s tests -v
 ```
-
