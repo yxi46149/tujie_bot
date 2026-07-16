@@ -19,6 +19,7 @@ def profile(user_id: int, points: int, invite_reward: int) -> str:
         "6️⃣ 每日签到：/checkin\n"
         "7️⃣ 兑换卡密：/shop\n"
         "8️⃣ 邀请排行：/rank\n"
+        "9️⃣ 我的卡密：/mycards\n"
         "----------------------------------------\n"
         "⚠️ 邀请好友加入指定群/频道并通过 /verify 后，"
         f"您将获得 <b>{invite_reward}</b> 积分。"
@@ -34,6 +35,7 @@ def help_message(invite_reward: int, checkin_reward: int) -> str:
         "• /myinvites —— 查看自己邀请的人和结算状态\n"
         "• /checkin —— 每日签到领积分\n"
         "• /shop —— 用积分兑换卡密\n"
+        "• /mycards —— 查看已兑换卡密，发送失败时也可找回\n"
         "• /rank —— 查看邀请排行榜\n\n"
         f"💡 每邀请 1 位好友完成验证 +{invite_reward} 积分；"
         f"每日签到 +{checkin_reward} 积分。"
@@ -85,5 +87,25 @@ def rank_message(rows: Sequence[object]) -> str:
         prefix = medals[index - 1] if index <= 3 else f"{index}."
         lines.append(
             f"{prefix} {escape(display)} — <b>{int(row['invite_count'])}</b> 人"  # type: ignore[index]
+        )
+    return "\n".join(lines)
+
+
+def my_cards_message(rows: Sequence[object]) -> str:
+    if not rows:
+        return "🎟 <b>我的卡密</b>\n\n您还没有兑换记录。"
+    lines = [
+        "🎟 <b>我的卡密</b>",
+        "",
+        "以下为最近 10 条兑换记录，请妥善保存：",
+        "",
+    ]
+    for row in rows:
+        lines.extend(
+            [
+                f"• <b>{escape(str(row['product_name']))}</b>",  # type: ignore[index]
+                f"  <code>{escape(str(row['code']))}</code>",  # type: ignore[index]
+                f"  {escape(str(row['created_at']))}",  # type: ignore[index]
+            ]
         )
     return "\n".join(lines)

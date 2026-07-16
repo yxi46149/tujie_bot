@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from secrets import token_urlsafe
 from typing import AsyncIterator, Iterable
 
 import aiosqlite
@@ -15,8 +16,11 @@ def utc_now() -> str:
 
 @dataclass(frozen=True, slots=True)
 class VerificationOutcome:
-    rewarded: bool
+    settled: bool = False
+    rewarded: bool = False
     inviter_id: int | None = None
+    reward_points: int = 0
+    limited: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,6 +141,27 @@ class Database:
                     FOREIGN KEY(product_id) REFERENCES products(id),
                     FOREIGN KEY(card_id) REFERENCES cards(id)
                 );
+
+                CREATE INDEX IF NOT EXISTS idx_redemptions_user
+                    ON redemptions(user_id, id DESC);
+
+                CREATE TABLE IF NOT EXISTS redemption_intents (
+                    token TEXT PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    product_id INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending'
+                        CHECK(status IN ('pending', 'completed', 'expired')),
+                    expires_at TEXT NOT NULL,
+                    redemption_id INTEGER UNIQUE,
+                    created_at TEXT NOT NULL,
+                    consumed_at TEXT,
+                    FOREIGN KEY(user_id) REFERENCES users(user_id),
+                    FOREIGN KEY(product_id) REFERENCES products(id),
+                    FOREIGN KEY(redemption_id) REFERENCES redemptions(id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_redemption_intents_user_status
+                    ON redemption_intents(user_id, status, created_at DESC);
                 """
             )
             await db.commit()
@@ -227,7 +252,12 @@ class Database:
             return list(await cursor.fetchall())
 
     async def verify_and_reward(
-        self, user_id: int, reward_points: int
+        self,
+        user_id: int,
+        reward_points: int,
+        daily_limit: int = 0,
+        day_start_utc: str = "",
+        day_end_utc: str = "",
     ) -> VerificationOutcome:
         now = utc_now()
         async with self.connection() as db:
@@ -247,25 +277,45 @@ class Database:
             ).fetchone()
             if not referral:
                 await db.commit()
-                return VerificationOutcome(rewarded=False)
+                return VerificationOutcome()
 
             inviter_id = int(referral["inviter_id"])
+            effective_reward = reward_points
+            limited = False
+            if daily_limit > 0 and day_start_utc and day_end_utc:
+                rewarded_today = await (
+                    await db.execute(
+                        """
+                        SELECT COUNT(*) AS count
+                        FROM referrals
+                        WHERE inviter_id = ?
+                          AND status = 'verified'
+                          AND reward_points > 0
+                          AND verified_at >= ?
+                          AND verified_at < ?
+                        """,
+                        (inviter_id, day_start_utc, day_end_utc),
+                    )
+                ).fetchone()
+                if int(rewarded_today["count"]) >= daily_limit:
+                    effective_reward = 0
+                    limited = True
             cursor = await db.execute(
                 """
                 UPDATE referrals
                 SET status = 'verified', reward_points = ?, verified_at = ?
                 WHERE invitee_id = ? AND status = 'pending'
                 """,
-                (reward_points, now, user_id),
+                (effective_reward, now, user_id),
             )
             if cursor.rowcount != 1:
                 await db.commit()
-                return VerificationOutcome(rewarded=False)
+                return VerificationOutcome()
 
-            if reward_points:
+            if effective_reward:
                 await db.execute(
                     "UPDATE users SET points = points + ?, updated_at = ? WHERE user_id = ?",
-                    (reward_points, now, inviter_id),
+                    (effective_reward, now, inviter_id),
                 )
                 await db.execute(
                     """
@@ -273,10 +323,16 @@ class Database:
                         user_id, delta, reason, related_user_id, created_at
                     ) VALUES (?, ?, 'invite_reward', ?, ?)
                     """,
-                    (inviter_id, reward_points, user_id, now),
+                    (inviter_id, effective_reward, user_id, now),
                 )
             await db.commit()
-            return VerificationOutcome(rewarded=True, inviter_id=inviter_id)
+            return VerificationOutcome(
+                settled=True,
+                rewarded=effective_reward > 0,
+                inviter_id=inviter_id,
+                reward_points=effective_reward,
+                limited=limited,
+            )
 
     async def claim_checkin(
         self, user_id: int, checkin_date: str, reward_points: int
@@ -364,10 +420,99 @@ class Database:
                 )
             ).fetchone()
 
-    async def redeem_card(self, user_id: int, product_id: int) -> RedeemOutcome:
+    async def create_redemption_intent(
+        self, user_id: int, product_id: int, ttl_seconds: int
+    ) -> str:
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat(timespec="seconds")
+        expires_at = (now_dt + timedelta(seconds=ttl_seconds)).isoformat(
+            timespec="seconds"
+        )
+        async with self.connection() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            await db.execute(
+                """
+                UPDATE redemption_intents
+                SET status = 'expired'
+                WHERE status = 'pending' AND expires_at <= ?
+                """,
+                (now,),
+            )
+            existing = await (
+                await db.execute(
+                    """
+                    SELECT token FROM redemption_intents
+                    WHERE user_id = ? AND product_id = ?
+                      AND status = 'pending' AND expires_at > ?
+                    ORDER BY created_at DESC LIMIT 1
+                    """,
+                    (user_id, product_id, now),
+                )
+            ).fetchone()
+            if existing:
+                await db.commit()
+                return str(existing["token"])
+            for _ in range(3):
+                token = token_urlsafe(16)
+                try:
+                    await db.execute(
+                        """
+                        INSERT INTO redemption_intents(
+                            token, user_id, product_id, expires_at, created_at
+                        ) VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (token, user_id, product_id, expires_at, now),
+                    )
+                except aiosqlite.IntegrityError:
+                    continue
+                await db.commit()
+                return token
+        raise RuntimeError("无法生成唯一兑换意图，请稍后重试。")
+
+    async def redeem_card(self, user_id: int, intent_token: str) -> RedeemOutcome:
         now = utc_now()
         async with self.connection() as db:
             await db.execute("BEGIN IMMEDIATE")
+            intent = await (
+                await db.execute(
+                    """
+                    SELECT ri.*, r.points_spent, c.code, p.name AS product_name,
+                           u.points AS current_points
+                    FROM redemption_intents ri
+                    JOIN users u ON u.user_id = ri.user_id
+                    JOIN products p ON p.id = ri.product_id
+                    LEFT JOIN redemptions r ON r.id = ri.redemption_id
+                    LEFT JOIN cards c ON c.id = r.card_id
+                    WHERE ri.token = ? AND ri.user_id = ?
+                    """,
+                    (intent_token, user_id),
+                )
+            ).fetchone()
+            if not intent:
+                await db.rollback()
+                return RedeemOutcome(status="invalid_intent")
+            if intent["status"] == "completed":
+                await db.rollback()
+                return RedeemOutcome(
+                    status="already_redeemed",
+                    product_name=str(intent["product_name"]),
+                    code=str(intent["code"]),
+                    points=int(intent["current_points"]),
+                    cost=int(intent["points_spent"]),
+                )
+            if intent["status"] != "pending" or str(intent["expires_at"]) <= now:
+                await db.execute(
+                    """
+                    UPDATE redemption_intents
+                    SET status = 'expired'
+                    WHERE token = ? AND status = 'pending'
+                    """,
+                    (intent_token,),
+                )
+                await db.commit()
+                return RedeemOutcome(status="expired_intent")
+
+            product_id = int(intent["product_id"])
             product = await (
                 await db.execute("SELECT * FROM products WHERE id = ?", (product_id,))
             ).fetchone()
@@ -427,13 +572,21 @@ class Database:
                 """,
                 (user_id, -cost, now),
             )
-            await db.execute(
+            redemption_cursor = await db.execute(
                 """
                 INSERT INTO redemptions(
                     user_id, product_id, card_id, points_spent, created_at
                 ) VALUES (?, ?, ?, ?, ?)
                 """,
                 (user_id, product_id, int(card["id"]), cost, now),
+            )
+            await db.execute(
+                """
+                UPDATE redemption_intents
+                SET status = 'completed', redemption_id = ?, consumed_at = ?
+                WHERE token = ? AND status = 'pending'
+                """,
+                (int(redemption_cursor.lastrowid), now, intent_token),
             )
             await db.commit()
             return RedeemOutcome(
@@ -443,6 +596,24 @@ class Database:
                 points=int(user["points"]) - cost,
                 cost=cost,
             )
+
+    async def get_user_redemptions(
+        self, user_id: int, limit: int = 10
+    ) -> list[aiosqlite.Row]:
+        async with self.connection() as db:
+            cursor = await db.execute(
+                """
+                SELECT p.name AS product_name, c.code, r.points_spent, r.created_at
+                FROM redemptions r
+                JOIN products p ON p.id = r.product_id
+                JOIN cards c ON c.id = r.card_id
+                WHERE r.user_id = ?
+                ORDER BY r.id DESC
+                LIMIT ?
+                """,
+                (user_id, limit),
+            )
+            return list(await cursor.fetchall())
 
     async def add_product(
         self, name: str, points_cost: int, description: str = ""

@@ -5,10 +5,10 @@ from collections.abc import Sequence
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 
-def main_menu(join_url: str) -> InlineKeyboardMarkup:
+def main_menu(join_buttons: Sequence[tuple[str, str]]) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
-    if join_url:
-        rows.append([InlineKeyboardButton(text="➡️ 加入通知频道", url=join_url)])
+    for label, url in join_buttons:
+        rows.append([InlineKeyboardButton(text=f"➡️ 加入{label}", url=url)])
     rows.extend(
         [
             [
@@ -30,9 +30,12 @@ def main_menu(join_url: str) -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(text="🛒 兑换卡密", callback_data="menu:shop"),
-                InlineKeyboardButton(text="🏆 邀请排行榜", callback_data="menu:rank"),
+                InlineKeyboardButton(text="🎟 我的卡密", callback_data="menu:mycards"),
             ],
-            [InlineKeyboardButton(text="📖 使用说明", callback_data="menu:help")],
+            [
+                InlineKeyboardButton(text="🏆 邀请排行榜", callback_data="menu:rank"),
+                InlineKeyboardButton(text="📖 使用说明", callback_data="menu:help"),
+            ],
         ]
     )
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -56,13 +59,13 @@ def shop_menu(products: Sequence[object]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def product_menu(product_id: int, has_stock: bool) -> InlineKeyboardMarkup:
+def product_menu(intent_token: str, has_stock: bool) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     if has_stock:
         rows.append(
             [
                 InlineKeyboardButton(
-                    text="✅ 确认兑换", callback_data=f"shop:confirm:{product_id}"
+                    text="✅ 确认兑换", callback_data=f"shop:confirm:{intent_token}"
                 )
             ]
         )

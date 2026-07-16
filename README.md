@@ -8,7 +8,9 @@
 - 验证后为邀请人结算积分（只结算一次）
 - 按 `Asia/Shanghai` 日期每日签到（每天一次）
 - 积分商城、卡密库存和原子兑换
+- 一次性兑换确认、防重复扣分和 `/mycards` 卡密找回
 - 管理员创建商品、批量导入卡密、上下架和调整积分
+- 私聊隔离、验证冷却与邀请奖励每日上限
 
 ## 1. 准备 Telegram 机器人
 
@@ -36,11 +38,24 @@ Copy-Item .env.example .env
 BOT_TOKEN=你的机器人Token
 ADMIN_IDS=你的Telegram数字ID
 REQUIRED_CHAT_IDS=@your_channel
-REQUIRED_JOIN_URL=https://t.me/your_channel
+REQUIRED_JOIN_URLS=https://t.me/your_channel
+REQUIRED_CHAT_NAMES=通知频道
 INVITE_REWARD=5
+INVITE_DAILY_REWARD_LIMIT=20
 CHECKIN_REWARD=1
+VERIFY_COOLDOWN_SECONDS=15
+VERIFY_MAX_CONCURRENCY=5
+REDEMPTION_INTENT_TTL_SECONDS=600
 TIMEZONE=Asia/Shanghai
 DATABASE_PATH=data/bot.db
+```
+
+多个必选频道的 ID、链接和名称必须一一对应，并用英文逗号分隔：
+
+```dotenv
+REQUIRED_CHAT_IDS=@channel_one,-1001234567890
+REQUIRED_JOIN_URLS=https://t.me/channel_one,https://t.me/+privateInvite
+REQUIRED_CHAT_NAMES=通知频道,用户交流群
 ```
 
 启动：
@@ -62,6 +77,7 @@ python -m app.main
 | `/myinvites` | 邀请记录与结算状态 |
 | `/checkin` | 每日签到 |
 | `/shop` | 卡密商城 |
+| `/mycards` | 找回最近兑换的卡密 |
 | `/rank` | 已验证邀请排行榜 |
 | `/help` | 使用说明 |
 
@@ -71,6 +87,8 @@ python -m app.main
 2. 被邀请人通过邀请人的专属链接首次启动；
 3. 被邀请人加入全部指定群/频道并通过 `/verify`；
 4. 同一被邀请人只能为一位邀请人结算一次。
+
+默认每位邀请人每天最多获得 20 次邀请奖励，超过后邀请仍会记录，但不再加分。可通过 `INVITE_DAILY_REWARD_LIMIT` 调整，设置为 `0` 表示不限制。
 
 ## 4. 管理员命令
 
@@ -95,6 +113,14 @@ CODE-003
 ```
 
 重复卡密会自动忽略。兑换在 SQLite `BEGIN IMMEDIATE` 事务中完成，可防止并发重复发放同一条卡密。
+
+Telegram 导入成功后，机器人会尽力删除包含卡密的原消息。更推荐使用本地导入，卡密不会经过 Telegram：
+
+```powershell
+python -m scripts.import_cards 1 .\codes.txt
+```
+
+用户操作被限制在与机器人的私聊中。兑换确认使用一次性 token；重复点击只会返回原卡密，不会再次扣分。若卡密消息发送失败，用户可使用 `/mycards` 找回最近 10 条兑换记录。
 
 ## 5. 数据与备份
 

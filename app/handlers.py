@@ -1,15 +1,24 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from html import escape
+from math import ceil
+from time import monotonic
 
 from aiogram import Bot, F, Router
-from aiogram.enums import ChatMemberStatus
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.enums import ChatMemberStatus, ChatType
+from aiogram.exceptions import (
+    TelegramAPIError,
+    TelegramBadRequest,
+    TelegramForbiddenError,
+    TelegramNetworkError,
+    TelegramRetryAfter,
+)
 from aiogram.filters import Command, CommandObject, CommandStart
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 from app.config import ChatId, Settings
 from app.database import Database
@@ -18,6 +27,7 @@ from app.texts import (
     help_message,
     invite_message,
     invites_message,
+    my_cards_message,
     points_message,
     profile,
     rank_message,
@@ -62,7 +72,19 @@ async def check_membership(
     for chat_id in chat_ids:
         try:
             member = await bot.get_chat_member(chat_id=chat_id, user_id=user_id)
-        except (TelegramBadRequest, TelegramForbiddenError):
+        except TelegramRetryAfter as exc:
+            logger.warning(
+                "成员检查触发 Telegram 限流，chat_id=%s retry_after=%s",
+                chat_id,
+                exc.retry_after,
+            )
+            errors.append(chat_id)
+            continue
+        except TelegramNetworkError:
+            logger.warning("成员检查网络异常，chat_id=%s", chat_id)
+            errors.append(chat_id)
+            continue
+        except (TelegramBadRequest, TelegramForbiddenError, TelegramAPIError):
             logger.exception("无法检查频道成员身份，chat_id=%s", chat_id)
             errors.append(chat_id)
             continue
@@ -80,16 +102,65 @@ async def answer_callback(
     bot: Bot,
     text: str,
     *,
-    reply_markup: object | None = None,
+    reply_markup: InlineKeyboardMarkup | None = None,
+    protect_content: bool = False,
 ) -> None:
-    if isinstance(callback.message, Message):
-        await callback.message.answer(text, reply_markup=reply_markup)
-    else:
-        await bot.send_message(callback.from_user.id, text, reply_markup=reply_markup)
+    await bot.send_message(
+        callback.from_user.id,
+        text,
+        reply_markup=reply_markup,
+        protect_content=protect_content,
+    )
 
 
 def build_router(settings: Settings, db: Database) -> Router:
-    router = Router(name="points_referral_bot")
+    root_router = Router(name="points_referral_bot")
+
+    @root_router.message(F.chat.type != ChatType.PRIVATE, F.text.startswith("/"))
+    async def reject_group_command(message: Message) -> None:
+        await message.reply("🔒 为保护积分和卡密，请私聊机器人使用此命令。")
+
+    @root_router.callback_query(F.message.chat.type != ChatType.PRIVATE)
+    async def reject_group_callback(callback: CallbackQuery) -> None:
+        await callback.answer(
+            "为保护个人信息和卡密，请私聊机器人操作。", show_alert=True
+        )
+
+    router = Router(name="private_points_referral_bot")
+    router.message.filter(F.chat.type == ChatType.PRIVATE)
+    router.callback_query.filter(F.message.chat.type == ChatType.PRIVATE)
+
+    verification_attempts: dict[int, float] = {}
+    verification_semaphore = asyncio.Semaphore(settings.verify_max_concurrency)
+
+    def verification_cooldown_remaining(user_id: int) -> int:
+        cooldown = settings.verify_cooldown_seconds
+        if cooldown <= 0:
+            return 0
+        now = monotonic()
+        last_attempt = verification_attempts.get(user_id)
+        if last_attempt is not None and now - last_attempt < cooldown:
+            return ceil(cooldown - (now - last_attempt))
+        verification_attempts[user_id] = now
+        if len(verification_attempts) > 10_000:
+            cutoff = now - cooldown
+            recent_attempts = {
+                key: value
+                for key, value in verification_attempts.items()
+                if value >= cutoff
+            }
+            verification_attempts.clear()
+            verification_attempts.update(recent_attempts)
+        return 0
+
+    def reward_day_window() -> tuple[str, str]:
+        local_now = datetime.now(settings.timezone)
+        local_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+        local_end = local_start + timedelta(days=1)
+        return (
+            local_start.astimezone(timezone.utc).isoformat(timespec="seconds"),
+            local_end.astimezone(timezone.utc).isoformat(timespec="seconds"),
+        )
 
     async def ensure_message_user(message: Message) -> None:
         if message.from_user:
@@ -126,6 +197,9 @@ def build_router(settings: Settings, db: Database) -> Router:
         rows = await db.get_recent_invites(user_id)
         return invites_message(verified, pending, rows)
 
+    async def render_my_cards(user_id: int) -> str:
+        return my_cards_message(await db.get_user_redemptions(user_id))
+
     async def render_rank() -> str:
         return rank_message(await db.get_rank())
 
@@ -143,7 +217,12 @@ def build_router(settings: Settings, db: Database) -> Router:
         if not settings.required_chat_ids:
             return "⚠️ 管理员尚未配置 REQUIRED_CHAT_IDS，暂时无法检查资格。"
 
-        result = await check_membership(bot, user_id, settings.required_chat_ids)
+        remaining = verification_cooldown_remaining(user_id)
+        if remaining:
+            return f"⏳ 检查过于频繁，请在 {remaining} 秒后重试。"
+
+        async with verification_semaphore:
+            result = await check_membership(bot, user_id, settings.required_chat_ids)
         if result.errors:
             return (
                 "⚠️ 暂时无法检查资格。请管理员确认机器人已加入所有指定"
@@ -152,17 +231,26 @@ def build_router(settings: Settings, db: Database) -> Router:
         if result.missing:
             return "❌ 尚未加入全部指定群/频道，请加入后重新点击检查。"
 
-        outcome = await db.verify_and_reward(user_id, settings.invite_reward)
+        day_start_utc, day_end_utc = reward_day_window()
+        outcome = await db.verify_and_reward(
+            user_id,
+            settings.invite_reward,
+            settings.invite_daily_reward_limit,
+            day_start_utc,
+            day_end_utc,
+        )
         if outcome.rewarded and outcome.inviter_id:
             try:
                 await bot.send_message(
                     outcome.inviter_id,
                     "🎉 您邀请的好友已完成资格验证！\n"
-                    f"💰 已获得 <b>{settings.invite_reward}</b> 积分。",
+                    f"💰 已获得 <b>{outcome.reward_points}</b> 积分。",
                 )
             except (TelegramBadRequest, TelegramForbiddenError):
                 logger.info("无法通知邀请人 user_id=%s", outcome.inviter_id)
             return "✅ 资格验证通过，邀请人的积分已经结算。"
+        if outcome.settled and outcome.limited:
+            return "✅ 资格验证通过；邀请人今日奖励已达上限，本次邀请已记录但不再加分。"
         return "✅ 资格验证通过！"
 
     async def send_shop_message(message: Message) -> None:
@@ -199,7 +287,7 @@ def build_router(settings: Settings, db: Database) -> Router:
         )
         await message.answer(
             await render_profile(message.from_user.id),
-            reply_markup=main_menu(settings.required_join_url),
+            reply_markup=main_menu(settings.join_buttons),
         )
 
     @router.message(Command("points"))
@@ -242,6 +330,15 @@ def build_router(settings: Settings, db: Database) -> Router:
         await ensure_message_user(message)
         await send_shop_message(message)
 
+    @router.message(Command("mycards"))
+    async def command_my_cards(message: Message) -> None:
+        if not message.from_user:
+            return
+        await ensure_message_user(message)
+        await message.answer(
+            await render_my_cards(message.from_user.id), protect_content=True
+        )
+
     @router.message(Command("rank"))
     async def command_rank(message: Message) -> None:
         await ensure_message_user(message)
@@ -262,7 +359,7 @@ def build_router(settings: Settings, db: Database) -> Router:
             callback,
             bot,
             await run_verification(callback.from_user.id, bot),
-            reply_markup=main_menu(settings.required_join_url),
+            reply_markup=main_menu(settings.join_buttons),
         )
 
     @router.callback_query(F.data == "menu:points")
@@ -315,6 +412,17 @@ def build_router(settings: Settings, db: Database) -> Router:
         await ensure_callback_user(callback)
         await send_shop_callback(callback, bot)
 
+    @router.callback_query(F.data == "menu:mycards")
+    async def callback_my_cards(callback: CallbackQuery, bot: Bot) -> None:
+        await callback.answer()
+        await ensure_callback_user(callback)
+        await answer_callback(
+            callback,
+            bot,
+            await render_my_cards(callback.from_user.id),
+            protect_content=True,
+        )
+
     @router.callback_query(F.data.startswith("shop:view:"))
     async def callback_product(callback: CallbackQuery, bot: Bot) -> None:
         await callback.answer()
@@ -330,6 +438,13 @@ def build_router(settings: Settings, db: Database) -> Router:
             return
         stock = int(product["stock"] or 0)
         description = str(product["description"] or "暂无说明")
+        intent_token = ""
+        if stock > 0:
+            intent_token = await db.create_redemption_intent(
+                callback.from_user.id,
+                product_id,
+                settings.redemption_intent_ttl_seconds,
+            )
         await answer_callback(
             callback,
             bot,
@@ -338,20 +453,21 @@ def build_router(settings: Settings, db: Database) -> Router:
             f"价格：<b>{int(product['points_cost'])}</b> 积分\n"
             f"库存：<b>{stock}</b>\n"
             f"说明：{escape(description)}",
-            reply_markup=product_menu(product_id, has_stock=stock > 0),
+            reply_markup=product_menu(intent_token, has_stock=stock > 0),
         )
 
     @router.callback_query(F.data.startswith("shop:confirm:"))
     async def callback_redeem(callback: CallbackQuery, bot: Bot) -> None:
         await callback.answer("正在兑换…")
         await ensure_callback_user(callback)
-        try:
-            product_id = int(str(callback.data).rsplit(":", maxsplit=1)[1])
-        except (ValueError, IndexError):
+        intent_token = str(callback.data).removeprefix("shop:confirm:").strip()
+        if not intent_token or len(intent_token) > 40:
             await answer_callback(callback, bot, "⚠️ 商品参数无效。")
             return
-        outcome = await db.redeem_card(callback.from_user.id, product_id)
-        if outcome.status == "not_found":
+        outcome = await db.redeem_card(callback.from_user.id, intent_token)
+        if outcome.status in {"invalid_intent", "expired_intent"}:
+            text = "⚠️ 兑换确认已失效，请重新打开商城选择商品。"
+        elif outcome.status == "not_found":
             text = "⚠️ 商品不存在或已经下架。"
         elif outcome.status == "out_of_stock":
             text = "😔 商品刚刚售罄，积分没有扣除。"
@@ -360,14 +476,29 @@ def build_router(settings: Settings, db: Database) -> Router:
                 f"❌ 积分不足，需要 <b>{outcome.cost}</b> 积分，"
                 f"您当前有 <b>{outcome.points}</b> 积分。"
             )
-        else:
+        elif outcome.status in {"ok", "already_redeemed"}:
+            title = (
+                "✅ <b>兑换成功</b>"
+                if outcome.status == "ok"
+                else "ℹ️ <b>该兑换已处理，未重复扣分</b>"
+            )
             text = (
-                "✅ <b>兑换成功</b>\n\n"
+                f"{title}\n\n"
                 f"商品：{escape(outcome.product_name)}\n"
                 f"卡密：<code>{escape(outcome.code)}</code>\n"
                 f"剩余积分：<b>{outcome.points}</b>\n\n"
-                "请妥善保存卡密，本消息不会在群聊中发送。"
+                "请妥善保存；如发送中断，可使用 /mycards 找回。"
             )
+            try:
+                await answer_callback(callback, bot, text, protect_content=True)
+            except TelegramAPIError:
+                logger.exception(
+                    "卡密消息发送失败，用户可通过 /mycards 找回，user_id=%s",
+                    callback.from_user.id,
+                )
+            return
+        else:
+            text = "⚠️ 兑换失败，请稍后重试。"
         await answer_callback(callback, bot, text)
 
     def is_admin(message: Message) -> bool:
@@ -434,7 +565,9 @@ def build_router(settings: Settings, db: Database) -> Router:
         await message.answer(f"✅ 商品已创建，商品 ID：<code>{product_id}</code>")
 
     @router.message(Command("addcards"))
-    async def command_add_cards(message: Message, command: CommandObject) -> None:
+    async def command_add_cards(
+        message: Message, command: CommandObject, bot: Bot
+    ) -> None:
         if not is_admin(message):
             await message.answer("⛔ 无管理员权限。")
             return
@@ -456,10 +589,26 @@ def build_router(settings: Settings, db: Database) -> Router:
             await message.answer("请至少提供一条卡密，每行一条。")
             return
         inserted = await db.add_cards(int(first_line[0]), codes)
+        source_deleted = True
+        try:
+            await message.delete()
+        except TelegramAPIError:
+            source_deleted = False
+            logger.warning(
+                "无法删除包含卡密的管理员消息，message_id=%s", message.message_id
+            )
+        deletion_warning = (
+            "\n⚠️ 原卡密消息未能自动删除，请立即手动删除。" if not source_deleted else ""
+        )
         if inserted == -1:
-            await message.answer("❌ 商品不存在。")
+            await bot.send_message(
+                message.chat.id, "❌ 商品不存在。" + deletion_warning
+            )
         else:
-            await message.answer(f"✅ 成功导入 <b>{inserted}</b> 条新卡密。")
+            await bot.send_message(
+                message.chat.id,
+                f"✅ 成功导入 <b>{inserted}</b> 条新卡密。" + deletion_warning,
+            )
 
     @router.message(Command("toggleproduct"))
     async def command_toggle_product(message: Message, command: CommandObject) -> None:
@@ -508,4 +657,5 @@ def build_router(settings: Settings, db: Database) -> Router:
     async def unknown_callback(callback: CallbackQuery) -> None:
         await callback.answer("按钮已失效，请发送 /start 刷新菜单。", show_alert=True)
 
-    return router
+    root_router.include_router(router)
+    return root_router

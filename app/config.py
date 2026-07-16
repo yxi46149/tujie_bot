@@ -37,14 +37,23 @@ def _parse_chat_ids(value: str) -> tuple[ChatId, ...]:
     return tuple(result)
 
 
+def _parse_strings(value: str) -> tuple[str, ...]:
+    return tuple(item.strip() for item in value.split(",") if item.strip())
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     bot_token: str
     admin_ids: frozenset[int]
     required_chat_ids: tuple[ChatId, ...]
-    required_join_url: str
+    required_join_urls: tuple[str, ...]
+    required_chat_names: tuple[str, ...]
     invite_reward: int
+    invite_daily_reward_limit: int
     checkin_reward: int
+    verify_cooldown_seconds: int
+    verify_max_concurrency: int
+    redemption_intent_ttl_seconds: int
     timezone_name: str
     database_path: Path
 
@@ -61,10 +70,47 @@ class Settings:
         if not database_path.is_absolute():
             database_path = PROJECT_ROOT / database_path
 
+        required_chat_ids = _parse_chat_ids(os.getenv("REQUIRED_CHAT_IDS", ""))
+        required_join_urls = _parse_strings(os.getenv("REQUIRED_JOIN_URLS", ""))
+        legacy_join_url = os.getenv("REQUIRED_JOIN_URL", "").strip()
+        if not required_join_urls and legacy_join_url:
+            required_join_urls = (legacy_join_url,)
+        required_chat_names = _parse_strings(os.getenv("REQUIRED_CHAT_NAMES", ""))
+        if len(required_join_urls) != len(required_chat_ids):
+            raise RuntimeError(
+                "REQUIRED_JOIN_URLS 的数量必须与 REQUIRED_CHAT_IDS 完全一致。"
+            )
+        if required_chat_names and len(required_chat_names) != len(required_chat_ids):
+            raise RuntimeError(
+                "REQUIRED_CHAT_NAMES 的数量必须与 REQUIRED_CHAT_IDS 完全一致。"
+            )
+        if required_chat_ids and not required_chat_names:
+            required_chat_names = tuple(
+                f"指定群/频道 {index}" for index in range(1, len(required_chat_ids) + 1)
+            )
+
         invite_reward = int(os.getenv("INVITE_REWARD", "5"))
+        invite_daily_reward_limit = int(os.getenv("INVITE_DAILY_REWARD_LIMIT", "20"))
         checkin_reward = int(os.getenv("CHECKIN_REWARD", "1"))
-        if invite_reward < 0 or checkin_reward < 0:
-            raise RuntimeError("INVITE_REWARD 和 CHECKIN_REWARD 不能为负数。")
+        verify_cooldown_seconds = int(os.getenv("VERIFY_COOLDOWN_SECONDS", "15"))
+        verify_max_concurrency = int(os.getenv("VERIFY_MAX_CONCURRENCY", "5"))
+        redemption_intent_ttl_seconds = int(
+            os.getenv("REDEMPTION_INTENT_TTL_SECONDS", "600")
+        )
+        if (
+            min(
+                invite_reward,
+                invite_daily_reward_limit,
+                checkin_reward,
+                verify_cooldown_seconds,
+            )
+            < 0
+        ):
+            raise RuntimeError("积分、每日上限和冷却时间不能为负数。")
+        if verify_max_concurrency < 1:
+            raise RuntimeError("VERIFY_MAX_CONCURRENCY 必须大于 0。")
+        if redemption_intent_ttl_seconds < 60:
+            raise RuntimeError("REDEMPTION_INTENT_TTL_SECONDS 不能小于 60。")
 
         timezone_name = os.getenv("TIMEZONE", "Asia/Shanghai").strip()
         try:
@@ -75,10 +121,15 @@ class Settings:
         return cls(
             bot_token=token,
             admin_ids=_parse_int_set(os.getenv("ADMIN_IDS", "")),
-            required_chat_ids=_parse_chat_ids(os.getenv("REQUIRED_CHAT_IDS", "")),
-            required_join_url=os.getenv("REQUIRED_JOIN_URL", "").strip(),
+            required_chat_ids=required_chat_ids,
+            required_join_urls=required_join_urls,
+            required_chat_names=required_chat_names,
             invite_reward=invite_reward,
+            invite_daily_reward_limit=invite_daily_reward_limit,
             checkin_reward=checkin_reward,
+            verify_cooldown_seconds=verify_cooldown_seconds,
+            verify_max_concurrency=verify_max_concurrency,
+            redemption_intent_ttl_seconds=redemption_intent_ttl_seconds,
             timezone_name=timezone_name,
             database_path=database_path,
         )
@@ -86,3 +137,9 @@ class Settings:
     @property
     def timezone(self) -> ZoneInfo:
         return ZoneInfo(self.timezone_name)
+
+    @property
+    def join_buttons(self) -> tuple[tuple[str, str], ...]:
+        return tuple(
+            zip(self.required_chat_names, self.required_join_urls, strict=True)
+        )
