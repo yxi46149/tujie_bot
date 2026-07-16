@@ -132,4 +132,27 @@ python -m scripts.import_cards 1 .\codes.txt
 
 ```powershell
 python -m unittest discover -s tests -v
+python -m scripts.check_config
+python -m scripts.check_bot
 ```
+
+其中 `check_config` 只做本地配置、数据库初始化和完整性检查；`check_bot`
+会实际连接 Telegram，验证 Token、频道访问权限和机器人管理员身份。
+
+## 7. 打包与发布
+
+生成不包含 `.env`、数据库和卡密的 ZIP 发布包：
+
+```powershell
+.\scripts\package.ps1 -Version 0.1.0
+```
+
+Docker 启动：
+
+```powershell
+docker compose up -d --build
+docker compose logs -f bot
+```
+
+完整的本机联调清单、GitHub Release、Windows、Linux systemd、Docker 部署、
+备份、升级与回滚步骤见 [测试、打包与发布指南](docs/TESTING_PACKAGING_DEPLOYMENT.md)。

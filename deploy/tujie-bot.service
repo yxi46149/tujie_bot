@@ -1,0 +1,25 @@
+[Unit]
+Description=tujie_bot Telegram referral points bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tujie-bot
+Group=tujie-bot
+WorkingDirectory=/opt/tujie_bot
+EnvironmentFile=/opt/tujie_bot/.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/tujie_bot/.venv/bin/python -m app.main
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/tujie_bot/data
+
+[Install]
+WantedBy=multi-user.target

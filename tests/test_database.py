@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -129,6 +131,75 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(second.rewarded)
         self.assertEqual(inviter["points"], 5)
         self.assertEqual(await self.db.get_invite_counts(100), (2, 0))
+
+    async def test_concurrent_replay_only_redeems_one_card(self) -> None:
+        await self.db.register_user(100, None, "用户")
+        await self.db.adjust_points(100, 20)
+        product_id = await self.db.add_product("并发商品", 10)
+        await self.db.add_cards(product_id, ["ONLY-CODE", "SECOND-CODE"])
+        intent = await self.db.create_redemption_intent(100, product_id, 600)
+
+        first, second = await asyncio.gather(
+            self.db.redeem_card(100, intent),
+            self.db.redeem_card(100, intent),
+        )
+        user = await self.db.get_user(100)
+        redemptions = await self.db.get_user_redemptions(100)
+
+        self.assertEqual({first.status, second.status}, {"ok", "already_redeemed"})
+        self.assertEqual(first.code, second.code)
+        self.assertEqual(user["points"], 10)
+        self.assertEqual(len(redemptions), 1)
+        self.assertEqual(await self.db.quick_check(), "ok")
+
+    async def test_initialize_upgrades_legacy_database_without_losing_users(
+        self,
+    ) -> None:
+        legacy_path = Path(self.temp_dir.name) / "legacy.db"
+        connection = sqlite3.connect(legacy_path)
+        try:
+            connection.execute(
+                """
+                CREATE TABLE users (
+                    user_id INTEGER PRIMARY KEY,
+                    username TEXT,
+                    first_name TEXT NOT NULL DEFAULT '',
+                    points INTEGER NOT NULL DEFAULT 0 CHECK(points >= 0),
+                    is_verified INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO users(
+                    user_id, username, first_name, points,
+                    is_verified, created_at, updated_at
+                ) VALUES (999, 'legacy', '旧用户', 42, 1, 'old', 'old')
+                """
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        upgraded = Database(legacy_path)
+        await upgraded.initialize()
+        user = await upgraded.get_user(999)
+        async with upgraded.connection() as connection:
+            intent_table = await (
+                await connection.execute(
+                    """
+                    SELECT name FROM sqlite_master
+                    WHERE type = 'table' AND name = 'redemption_intents'
+                    """
+                )
+            ).fetchone()
+
+        self.assertEqual(user["username"], "legacy")
+        self.assertEqual(user["points"], 42)
+        self.assertIsNotNone(intent_table)
+        self.assertEqual(await upgraded.quick_check(), "ok")
 
 
 if __name__ == "__main__":

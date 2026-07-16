@@ -716,3 +716,8 @@ class Database:
                 row = await (await db.execute(query)).fetchone()
                 result[key] = int(row[0])
         return result
+
+    async def quick_check(self) -> str:
+        async with self.connection() as db:
+            row = await (await db.execute("PRAGMA quick_check")).fetchone()
+            return str(row[0]) if row else "no result"
