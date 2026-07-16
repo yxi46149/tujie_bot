@@ -2,6 +2,11 @@
 
 基于 Python、aiogram 3 和 SQLite，实现截图中的主要功能：
 
+> 当前版本：`v0.1.0`（文档更新于 2026-07-17）。本项目只使用
+> **SQLite**，默认数据库文件为 `data/bot.db`，不需要安装或配置
+> MySQL、PostgreSQL、Redis 等外部数据服务。`aiosqlite` 只是 Python
+> 异步访问 SQLite 的驱动。
+
 - 个人中心与积分查询
 - 指定群/频道成员验证
 - 专属邀请链接、邀请记录与排行榜
@@ -124,7 +129,15 @@ python -m scripts.import_cards 1 .\codes.txt
 
 ## 5. 数据与备份
 
-默认数据库在 `data/bot.db`。停止机器人后复制该文件即可备份；运行中备份建议同时处理 `bot.db-wal`，或使用 SQLite 在线备份命令。
+所有用户、积分、邀请关系、签到、商品、卡密和兑换记录都保存在同一个
+SQLite 数据库中。普通 Windows/Linux 部署默认使用项目目录下的
+`data/bot.db`；Docker 容器内使用 `/app/data/bot.db`，并由 `bot_data`
+volume 持久化。Docker volume 不是另一种数据库，它保存的仍然是 SQLite 文件。
+
+停止机器人后复制 `bot.db` 即可备份。运行过程中可能出现
+`bot.db-wal` 和 `bot.db-shm`，这是 SQLite WAL 模式的正常文件；不要在机器人
+运行时只复制 `bot.db`。本项目按单实例设计，不要让多个机器人进程或服务器
+同时操作同一个 SQLite 文件。
 
 不要提交 `.env`、Token 或生产数据库。若 Token 曾泄露，请立即到 `@BotFather` 使用 `/revoke` 重新生成。
 

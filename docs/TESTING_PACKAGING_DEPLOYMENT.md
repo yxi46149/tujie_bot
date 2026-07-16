@@ -2,12 +2,41 @@
 
 本指南按“本机自检 → Telegram 联调 → 打包 → 发布 → 部署 → 升级/回滚”的顺序执行。项目是长期运行的 Telegram 服务，不建议打成单个 EXE；推荐发布源码 ZIP，生产环境使用 Linux systemd 或 Docker。
 
+> 适用版本：`tujie_bot v0.1.0`
+>
+> 最后更新：2026-07-17
+>
+> 数据库：SQLite（仅 SQLite）
+
+## 当前技术栈与数据库说明
+
+| 项目 | 当前实现 |
+|---|---|
+| 语言 | Python 3.11 |
+| Telegram 框架 | aiogram 3.29.1 |
+| 数据库 | SQLite |
+| Python 数据库驱动 | aiosqlite |
+| 默认数据库配置 | `DATABASE_PATH=data/bot.db` |
+| 部署方式 | Windows、Linux systemd 或 Docker，均使用同一套 SQLite 实现 |
+
+本项目没有使用 MySQL、PostgreSQL、MongoDB 或云数据库，也不需要单独启动数据库服务。`aiosqlite` 是异步读写 SQLite 的 Python 驱动，不是另一种数据库。
+
+不同部署方式下，数据库位置如下：
+
+| 部署方式 | SQLite 文件位置 | 持久化方式 |
+|---|---|---|
+| Windows 本机/服务 | `<项目目录>\data\bot.db` | 普通本地文件 |
+| Linux systemd | `/opt/tujie_bot/data/bot.db` | 普通本地文件 |
+| Docker | 容器内 `/app/data/bot.db` | Compose 的 `bot_data` volume |
+
+Docker volume 只是保存 `/app/data/bot.db`，其中仍然是 SQLite 文件，并没有切换数据库类型。首次启动会自动创建表；已有旧库启动时会增量补齐当前版本缺少的表和索引，不会主动清空用户数据。
+
 ## 1. 发布前必须知道的事项
 
 - 测试时使用单独的测试机器人 Token、测试频道和测试卡密，不要直接操作生产数据。
 - `.env`、`data/bot.db`、卡密文件和备份文件不能提交 Git，也不能放入 Release ZIP。
 - 一个 Token 同一时间只运行一个轮询实例，否则 Telegram 会返回 `Conflict`。
-- SQLite 适合单实例部署。本项目的积分结算和卡密兑换使用事务防重，但不要让多个服务器共享同一数据库文件。
+- SQLite 适合单实例部署。本项目的积分结算和卡密兑换使用事务防重，但不要同时启动两个机器人进程，也不要让多个服务器共享同一数据库文件。
 - 机器人必须加入每个必选群/频道并设为管理员，否则无法可靠调用 `getChatMember`。
 
 ## 2. Windows 本机安装
@@ -199,7 +228,7 @@ docker compose up -d
 docker compose logs -f bot
 ```
 
-SQLite 数据保存在名为 `bot_data` 的 Docker volume 中。不要同时执行两个 `docker compose up` 实例。更新：
+SQLite 数据文件位于容器内 `/app/data/bot.db`，并保存在名为 `bot_data` 的 Docker volume 中。这个 volume 保存的仍然是 SQLite 文件。不要同时执行两个 `docker compose up` 实例。更新：
 
 ```bash
 docker compose down
@@ -209,6 +238,8 @@ docker compose up -d
 ```
 
 ## 10. 数据库备份、升级和回滚
+
+以下全部操作针对 SQLite 文件。无需导出 SQL，也没有数据库账号密码。运行时出现 `bot.db-wal` 和 `bot.db-shm` 是 WAL 模式的正常现象；最简单可靠的备份方式是先停止机器人，让 WAL 正常合并，再复制 `bot.db`。
 
 ### 普通/Windows/systemd 部署
 
