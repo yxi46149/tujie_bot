@@ -10,7 +10,7 @@ if ([string]::IsNullOrWhiteSpace($Version)) {
     $Version = (Get-Content -LiteralPath (Join-Path $ProjectRoot "VERSION") -Raw).Trim()
 }
 if ($Version -notmatch '^[0-9A-Za-z][0-9A-Za-z._-]*$') {
-    throw "版本号只能包含字母、数字、点、下划线和连字符。"
+    throw "Invalid version. Only letters, numbers, dots, underscores and hyphens are allowed."
 }
 
 $DistDirectory = Join-Path $ProjectRoot "dist"
@@ -20,10 +20,10 @@ $ResolvedDistDirectory = [IO.Path]::GetFullPath($DistDirectory)
 $ResolvedArchivePath = [IO.Path]::GetFullPath($ArchivePath)
 
 if (-not $ResolvedDistDirectory.StartsWith($ResolvedProjectRoot, [StringComparison]::OrdinalIgnoreCase)) {
-    throw "拒绝在项目目录外创建发布文件。"
+    throw "Refusing to create release files outside the project directory."
 }
 if (-not $ResolvedArchivePath.StartsWith($ResolvedDistDirectory, [StringComparison]::OrdinalIgnoreCase)) {
-    throw "发布文件路径不安全。"
+    throw "Unsafe release archive path."
 }
 
 New-Item -ItemType Directory -Path $ResolvedDistDirectory -Force | Out-Null
@@ -49,7 +49,7 @@ $RelativeItems = @(
 $Items = foreach ($RelativeItem in $RelativeItems) {
     $ItemPath = Join-Path $ProjectRoot $RelativeItem
     if (-not (Test-Path -LiteralPath $ItemPath)) {
-        throw "缺少打包文件：$RelativeItem"
+        throw "Missing package file: $RelativeItem"
     }
     Get-Item -LiteralPath $ItemPath -Force
 }
@@ -94,6 +94,6 @@ finally {
 }
 $Hash = Get-FileHash -LiteralPath $ResolvedArchivePath -Algorithm SHA256
 
-Write-Output "打包完成：$ResolvedArchivePath"
-Write-Output "SHA256：$($Hash.Hash)"
-Write-Output "已排除 .env、数据库、日志、虚拟环境和 Git 历史。"
+Write-Output "Package created: $ResolvedArchivePath"
+Write-Output "SHA256: $($Hash.Hash)"
+Write-Output "Excluded .env, database files, logs, virtualenv and Git history."
