@@ -39,6 +39,7 @@ $RelativeItems = @(
     "tests",
     ".dockerignore",
     ".env.example",
+    ".gitattributes",
     ".gitignore",
     "compose.yaml",
     "Dockerfile",

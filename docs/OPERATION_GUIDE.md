@@ -286,7 +286,9 @@ cd /home/ubuntu/bot/tujie_bot
 bash scripts/upgrade_server.sh
 ```
 
-脚本会自动完成：停止 `tujie-bot` 服务、备份 `data/bot.db*`、解压新包、覆盖程序文件、保留 `.env`/`.venv`/`data`、安装依赖、执行 `check_config` 和 `check_bot`、重新启动服务并显示状态。
+脚本会自动完成：停止 `tujie-bot` 服务、按 `.env` 的 `DATABASE_PATH` 备份真实 SQLite 文件、解压新包、覆盖程序文件、保留 `.env`/`.venv`/`data`/`logs`/`backups`、安装依赖、执行 `check_config` 和 `check_bot`、重新启动服务并显示状态。
+
+为避免覆盖或误删生产数据，脚本会在正式同步前先预检查删除清单。只有 `app`、`deploy`、`docs`、`scripts`、`tests` 等程序目录中的旧文件允许自动删除；如果项目根目录里有生产卡密、临时资料或其他手工文件，脚本会中止并提示你先移动或备份。
 
 常用参数：
 

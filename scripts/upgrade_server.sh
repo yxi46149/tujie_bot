@@ -23,27 +23,31 @@ ZIP_PATH=""
 SKIP_CHECK_BOT=0
 RUN_TESTS=0
 NO_START=0
+ALLOW_DELETE_EXTRA=0
 SERVICE_WAS_ACTIVE=0
 BACKUP_PATH=""
+DATABASE_FILE=""
 
 usage() {
     cat <<'EOF'
-Usage:
+用法：
   bash scripts/upgrade_server.sh [release.zip]
   bash scripts/upgrade_server.sh --zip /home/ubuntu/bot/tujie_bot-v0.1.2.zip
 
-Options:
-  -z, --zip PATH          Release ZIP. If omitted, auto-detect latest tujie_bot-v*.zip.
-  -d, --project-dir DIR   Project directory. Default: current directory.
-  -s, --service NAME      systemd service name. Default: tujie-bot.
-      --backup-dir DIR    Database backup directory. Default: ../backups.
-      --tmp-dir DIR       Temporary release directory. Default: ../release_tmp.
-      --skip-check-bot    Skip Telegram connectivity check.
-      --run-tests         Run unittest suite before starting service.
-      --no-start          Do not start systemd service after upgrade.
-  -h, --help              Show this help.
+参数：
+  -z, --zip PATH          发布 ZIP。未填写时自动查找最新的 tujie_bot-v*.zip。
+  -d, --project-dir DIR   项目目录。默认：当前目录。
+  -s, --service NAME      systemd 服务名。默认：tujie-bot。
+      --backup-dir DIR    数据库备份目录。默认：../backups。
+      --tmp-dir DIR       临时解压目录。默认：../release_tmp。
+      --skip-check-bot    跳过 Telegram 联通性检查。
+      --run-tests         启动服务前运行单元测试。
+      --no-start          升级完成后不启动 systemd 服务。
+      --allow-delete-extra
+                            允许 rsync 删除非程序文件。生产环境不建议使用。
+  -h, --help              显示帮助。
 
-Examples:
+示例：
   cd /home/ubuntu/bot/tujie_bot
   bash scripts/upgrade_server.sh /home/ubuntu/bot/tujie_bot-v0.1.2.zip
 
@@ -52,22 +56,22 @@ EOF
 }
 
 log() {
-    printf '\n[upgrade] %s\n' "$*"
+    printf '\n[升级] %s\n' "$*"
 }
 
 die() {
-    printf '\n[upgrade][error] %s\n' "$*" >&2
+    printf '\n[升级][失败] %s\n' "$*" >&2
     exit 1
 }
 
 on_error() {
     local exit_code=$?
-    printf '\n[upgrade][error] Upgrade failed at line %s (exit %s).\n' "${BASH_LINENO[0]:-?}" "$exit_code" >&2
+    printf '\n[升级][失败] 脚本在第 %s 行失败，退出码 %s。\n' "${BASH_LINENO[0]:-?}" "$exit_code" >&2
     if [[ -n "$BACKUP_PATH" ]]; then
-        printf '[upgrade][error] Database backup: %s\n' "$BACKUP_PATH" >&2
+        printf '[升级][失败] 数据库备份位置：%s\n' "$BACKUP_PATH" >&2
     fi
     if [[ "$SERVICE_WAS_ACTIVE" == "1" ]]; then
-        printf '[upgrade][error] Service was stopped. After fixing the issue, run: sudo systemctl start %s\n' "$SERVICE_NAME" >&2
+        printf '[升级][失败] 服务已经停止。修复问题后可执行：sudo systemctl start %s\n' "$SERVICE_NAME" >&2
     fi
     exit "$exit_code"
 }
@@ -75,33 +79,113 @@ trap on_error ERR
 
 require_command() {
     local name="$1"
-    command -v "$name" >/dev/null 2>&1 || die "Missing command: $name"
+    command -v "$name" >/dev/null 2>&1 || die "缺少命令：$name"
+}
+
+trim() {
+    local value="$1"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    printf '%s' "$value"
+}
+
+resolve_database_file() {
+    local database_value=""
+    local line=""
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="$(trim "$line")"
+        line="${line#export }"
+        [[ "$line" == DATABASE_PATH=* ]] || continue
+        database_value="${line#DATABASE_PATH=}"
+    done < "$PROJECT_DIR/.env"
+
+    database_value="$(trim "${database_value:-data/bot.db}")"
+    if [[ "$database_value" == \"*\" && "$database_value" == *\" ]]; then
+        database_value="${database_value:1:${#database_value}-2}"
+    elif [[ "$database_value" == \'*\' && "$database_value" == *\' ]]; then
+        database_value="${database_value:1:${#database_value}-2}"
+    fi
+
+    if [[ "$database_value" = /* ]]; then
+        realpath -m "$database_value"
+    else
+        realpath -m "$PROJECT_DIR/$database_value"
+    fi
+}
+
+prepare_tmp_dir() {
+    if [[ -e "$TMP_DIR" && ! -f "$TMP_DIR/.tujie-upgrade-tmp" ]]; then
+        die "临时目录已存在且没有升级脚本标记，为避免误删拒绝清理：$TMP_DIR"
+    fi
+    rm -rf "$TMP_DIR"
+    mkdir -p "$TMP_DIR"
+    touch "$TMP_DIR/.tujie-upgrade-tmp"
+}
+
+is_expected_delete() {
+    local path="${1#./}"
+    case "$path" in
+        app/*|deploy/*|docs/*|scripts/*|tests/*) return 0 ;;
+        __pycache__/*|*/__pycache__/*|*.pyc|*.pyo) return 0 ;;
+        .dockerignore|.env.example|.gitignore|.gitattributes) return 0 ;;
+        compose.yaml|Dockerfile|README.md|requirements.txt|VERSION) return 0 ;;
+    esac
+    return 1
+}
+
+check_rsync_deletions() {
+    local dry_run_file="$1"
+    local blocked=()
+    local line=""
+    local path=""
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ "$line" == \*deleting* ]] || continue
+        path="${line#*deleting}"
+        path="$(trim "$path")"
+        [[ -n "$path" ]] || continue
+        if ! is_expected_delete "$path"; then
+            blocked+=("$path")
+        fi
+    done < "$dry_run_file"
+
+    if [[ "${#blocked[@]}" -eq 0 || "$ALLOW_DELETE_EXTRA" == "1" ]]; then
+        return 0
+    fi
+
+    printf '\n[升级][失败] 同步新版本时将删除以下非程序文件，已中止以保护生产数据：\n' >&2
+    local item=""
+    for item in "${blocked[@]}"; do
+        printf '  - %s\n' "$item" >&2
+    done
+    printf '\n这些文件可能是生产卡密、临时资料或手工上传文件。请先移动或备份它们。\n' >&2
+    printf '确认这些文件可以删除时，再显式追加参数：--allow-delete-extra\n' >&2
+    exit 1
 }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -z|--zip)
-            [[ $# -ge 2 ]] || die "$1 requires a value."
+            [[ $# -ge 2 ]] || die "$1 需要填写参数值。"
             ZIP_PATH="$2"
             shift 2
             ;;
         -d|--project-dir)
-            [[ $# -ge 2 ]] || die "$1 requires a value."
+            [[ $# -ge 2 ]] || die "$1 需要填写参数值。"
             PROJECT_DIR="$2"
             shift 2
             ;;
         -s|--service)
-            [[ $# -ge 2 ]] || die "$1 requires a value."
+            [[ $# -ge 2 ]] || die "$1 需要填写参数值。"
             SERVICE_NAME="$2"
             shift 2
             ;;
         --backup-dir)
-            [[ $# -ge 2 ]] || die "$1 requires a value."
+            [[ $# -ge 2 ]] || die "$1 需要填写参数值。"
             BACKUP_DIR="$2"
             shift 2
             ;;
         --tmp-dir)
-            [[ $# -ge 2 ]] || die "$1 requires a value."
+            [[ $# -ge 2 ]] || die "$1 需要填写参数值。"
             TMP_DIR="$2"
             shift 2
             ;;
@@ -117,6 +201,10 @@ while [[ $# -gt 0 ]]; do
             NO_START=1
             shift
             ;;
+        --allow-delete-extra)
+            ALLOW_DELETE_EXTRA=1
+            shift
+            ;;
         -h|--help)
             usage
             exit 0
@@ -126,7 +214,7 @@ while [[ $# -gt 0 ]]; do
                 ZIP_PATH="$1"
                 shift
             else
-                die "Unknown argument: $1"
+                die "无法识别的参数：$1"
             fi
             ;;
     esac
@@ -145,22 +233,26 @@ if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
 fi
 
 PROJECT_DIR="$(realpath -m "$PROJECT_DIR")"
-[[ -d "$PROJECT_DIR" ]] || die "Project directory does not exist: $PROJECT_DIR"
-[[ -f "$PROJECT_DIR/requirements.txt" && -d "$PROJECT_DIR/app" ]] || die "Not a tujie_bot project directory: $PROJECT_DIR"
-[[ -f "$PROJECT_DIR/.env" ]] || die "Missing .env in project directory: $PROJECT_DIR/.env"
+[[ -d "$PROJECT_DIR" ]] || die "项目目录不存在：$PROJECT_DIR"
+[[ -f "$PROJECT_DIR/requirements.txt" && -d "$PROJECT_DIR/app" ]] || die "这不是 tujie_bot 项目目录：$PROJECT_DIR"
+[[ -f "$PROJECT_DIR/.env" ]] || die "项目目录缺少 .env：$PROJECT_DIR/.env"
 
 PROJECT_PARENT="$(dirname "$PROJECT_DIR")"
 BACKUP_DIR="${BACKUP_DIR:-$PROJECT_PARENT/backups}"
 TMP_DIR="${TMP_DIR:-$PROJECT_PARENT/release_tmp}"
 BACKUP_DIR="$(realpath -m "$BACKUP_DIR")"
 TMP_DIR="$(realpath -m "$TMP_DIR")"
+DATABASE_FILE="$(resolve_database_file)"
 
-[[ -n "$TMP_DIR" && "$TMP_DIR" != "/" ]] || die "Unsafe temporary directory: $TMP_DIR"
+[[ -n "$TMP_DIR" && "$TMP_DIR" != "/" ]] || die "临时目录不安全：$TMP_DIR"
 case "$TMP_DIR/" in
-    "$PROJECT_DIR/"*) die "Temporary directory must be outside project directory: $TMP_DIR" ;;
+    "$PROJECT_DIR/"*) die "临时目录必须放在项目目录外：$TMP_DIR" ;;
 esac
 case "$PROJECT_DIR/" in
-    "$TMP_DIR/"*) die "Temporary directory cannot contain project directory: $TMP_DIR" ;;
+    "$TMP_DIR/"*) die "临时目录不能包含项目目录：$TMP_DIR" ;;
+esac
+case "$BACKUP_DIR/" in
+    "$TMP_DIR/"*) die "备份目录不能放在临时目录内：$BACKUP_DIR" ;;
 esac
 
 detect_zip() {
@@ -186,14 +278,14 @@ detect_zip() {
 
 if [[ -z "$ZIP_PATH" ]]; then
     ZIP_PATH="$(detect_zip || true)"
-    [[ -n "$ZIP_PATH" ]] || die "No release ZIP found. Pass one explicitly, for example: bash scripts/upgrade_server.sh /home/ubuntu/bot/tujie_bot-v0.1.2.zip"
+    [[ -n "$ZIP_PATH" ]] || die "没有找到发布 ZIP。请显式传入，例如：bash scripts/upgrade_server.sh /home/ubuntu/bot/tujie_bot-v0.1.2.zip"
 fi
 
 ZIP_PATH="$(realpath -m "$ZIP_PATH")"
-[[ -f "$ZIP_PATH" ]] || die "Release ZIP does not exist: $ZIP_PATH"
+[[ -f "$ZIP_PATH" ]] || die "发布 ZIP 不存在：$ZIP_PATH"
 
 if ! unzip -Z1 "$ZIP_PATH" | grep -qx 'tujie_bot/requirements.txt'; then
-    die "Release ZIP does not look like a tujie_bot package: $ZIP_PATH"
+    die "发布 ZIP 看起来不是 tujie_bot 包：$ZIP_PATH"
 fi
 
 SERVICE_EXISTS=0
@@ -203,96 +295,119 @@ if systemctl cat "$SERVICE_NAME" >/dev/null 2>&1; then
     if [[ -n "$service_workdir" && "$service_workdir" != "-" ]]; then
         service_workdir="$(realpath -m "$service_workdir")"
         if [[ "$service_workdir" != "$PROJECT_DIR" ]]; then
-            die "Service WorkingDirectory is $service_workdir, but project directory is $PROJECT_DIR. Re-run with --project-dir or fix deploy/tujie-bot.service."
+            die "systemd 服务目录是 $service_workdir，但本次项目目录是 $PROJECT_DIR。请用 --project-dir 指定正确目录，或修正 deploy/tujie-bot.service。"
         fi
     fi
 fi
 
-log "Project directory: $PROJECT_DIR"
-log "Release ZIP: $ZIP_PATH"
-log "Service: $SERVICE_NAME"
+log "项目目录：$PROJECT_DIR"
+log "发布包：$ZIP_PATH"
+log "服务名：$SERVICE_NAME"
+log "数据库文件：$DATABASE_FILE"
 
 if [[ "$SERVICE_EXISTS" == "1" ]]; then
     if systemctl is-active --quiet "$SERVICE_NAME"; then
         SERVICE_WAS_ACTIVE=1
     fi
-    log "Stopping service..."
+    log "正在停止服务..."
     "${SUDO[@]}" systemctl stop "$SERVICE_NAME"
 else
-    log "systemd service not found; upgrade will sync files and run checks only."
+    log "未找到 systemd 服务；本次只同步文件并执行检查。"
 fi
 
-if compgen -G "$PROJECT_DIR/data/bot.db*" >/dev/null; then
+if compgen -G "$DATABASE_FILE*" >/dev/null; then
     timestamp="$(date +%Y%m%d-%H%M%S)"
     BACKUP_PATH="$BACKUP_DIR/bot-db-$timestamp"
     mkdir -p "$BACKUP_PATH"
-    cp -a "$PROJECT_DIR"/data/bot.db* "$BACKUP_PATH"/
-    log "Database backup: $BACKUP_PATH"
+    cp -a "$DATABASE_FILE"* "$BACKUP_PATH"/
+    log "已备份数据库：$BACKUP_PATH"
 else
-    log "No database file found; skipped database backup."
+    log "未找到数据库文件，跳过数据库备份。"
 fi
 
-log "Unpacking release..."
-rm -rf "$TMP_DIR"
-mkdir -p "$TMP_DIR"
+log "正在解压发布包..."
+prepare_tmp_dir
 unzip -q "$ZIP_PATH" -d "$TMP_DIR"
 RELEASE_ROOT="$TMP_DIR/tujie_bot"
-[[ -d "$RELEASE_ROOT/app" && -f "$RELEASE_ROOT/requirements.txt" ]] || die "Invalid release content under $RELEASE_ROOT"
+[[ -d "$RELEASE_ROOT/app" && -f "$RELEASE_ROOT/requirements.txt" ]] || die "发布包内容不完整：$RELEASE_ROOT"
 
-log "Syncing application files..."
-rsync -a --delete \
+RSYNC_EXCLUDES=(
     --exclude '.env' \
     --exclude '.venv' \
     --exclude '.git' \
     --exclude 'data' \
     --exclude 'dist' \
     --exclude 'logs' \
-    "$RELEASE_ROOT"/ "$PROJECT_DIR"/
+    --exclude 'backups' \
+    --exclude '*.db' \
+    --exclude '*.db-wal' \
+    --exclude '*.db-shm' \
+    --exclude '*.sqlite' \
+    --exclude '*.sqlite3' \
+    --exclude '*.log'
+)
+if [[ "$DATABASE_FILE" == "$PROJECT_DIR/"* ]]; then
+    database_relative="$(realpath -m --relative-to="$PROJECT_DIR" "$DATABASE_FILE")"
+    RSYNC_EXCLUDES+=(
+        --exclude "$database_relative"
+        --exclude "$database_relative-wal"
+        --exclude "$database_relative-shm"
+    )
+fi
+
+log "正在预检查同步删除清单..."
+DRY_RUN_FILE="$(mktemp /tmp/tujie-rsync-check.XXXXXX)"
+rsync -a --delete --dry-run --itemize-changes "${RSYNC_EXCLUDES[@]}" "$RELEASE_ROOT"/ "$PROJECT_DIR"/ > "$DRY_RUN_FILE"
+check_rsync_deletions "$DRY_RUN_FILE"
+rm -f "$DRY_RUN_FILE"
+
+log "正在同步程序文件..."
+rsync -a --delete "${RSYNC_EXCLUDES[@]}" "$RELEASE_ROOT"/ "$PROJECT_DIR"/
 
 cd "$PROJECT_DIR"
 PYTHON_BIN="$PROJECT_DIR/.venv/bin/python"
 if [[ ! -x "$PYTHON_BIN" ]]; then
-    log "Creating virtual environment..."
-    python3 -m venv "$PROJECT_DIR/.venv" || die "Failed to create venv. On Ubuntu install venv first: sudo apt install -y python3.12-venv"
+    log "正在创建虚拟环境..."
+    python3 -m venv "$PROJECT_DIR/.venv" || die "创建虚拟环境失败。Ubuntu 请先安装：sudo apt install -y python3.12-venv"
 fi
 
-log "Installing dependencies..."
+log "正在安装依赖..."
 "$PYTHON_BIN" -m pip install -r requirements.txt
 
 if [[ "$RUN_TESTS" == "1" ]]; then
-    log "Running automated tests..."
+    log "正在运行自动化测试..."
     "$PYTHON_BIN" -m unittest discover -s tests -v
 fi
 
-log "Running local config check..."
+log "正在执行本地配置检查..."
 "$PYTHON_BIN" -m scripts.check_config
 
 if [[ "$SKIP_CHECK_BOT" == "0" ]]; then
-    log "Running Telegram connectivity check..."
+    log "正在执行 Telegram 联通性检查..."
     "$PYTHON_BIN" -m scripts.check_bot
 else
-    log "Skipped Telegram connectivity check."
+    log "已跳过 Telegram 联通性检查。"
 fi
 
 rm -rf "$TMP_DIR"
 
 if [[ "$NO_START" == "1" ]]; then
-    log "Skipped service start because --no-start was provided."
-    log "Upgrade completed."
+    log "已按 --no-start 跳过服务启动。"
+    log "升级完成。"
     exit 0
 fi
 
 if [[ "$SERVICE_EXISTS" == "1" ]]; then
-    log "Starting service..."
+    log "正在启动服务..."
     "${SUDO[@]}" systemctl start "$SERVICE_NAME"
     sleep 2
     if ! systemctl is-active --quiet "$SERVICE_NAME"; then
         "${SUDO[@]}" systemctl status "$SERVICE_NAME" --no-pager --full || true
-        die "Service failed to stay active: $SERVICE_NAME"
+        die "服务启动后未保持运行：$SERVICE_NAME"
     fi
     "${SUDO[@]}" systemctl status "$SERVICE_NAME" --no-pager --full
 else
-    log "Start manually: cd \"$PROJECT_DIR\" && .venv/bin/python -m app.main"
+    log "可手动启动：cd \"$PROJECT_DIR\" && .venv/bin/python -m app.main"
 fi
 
-log "Upgrade completed."
+log "升级完成。"
