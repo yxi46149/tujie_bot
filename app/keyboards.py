@@ -36,7 +36,12 @@ def main_menu(join_buttons: Sequence[tuple[str, str]]) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="🎲 积分抽奖", callback_data="menu:lottery"),
             ],
             [
+                InlineKeyboardButton(
+                    text="💎 积分排行榜", callback_data="menu:pointrank"
+                ),
                 InlineKeyboardButton(text="🏆 邀请排行榜", callback_data="menu:rank"),
+            ],
+            [
                 InlineKeyboardButton(text="📖 使用说明", callback_data="menu:help"),
             ],
         ]

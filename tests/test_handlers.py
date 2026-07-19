@@ -35,6 +35,18 @@ class HandlerSafetyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(keyboard.inline_keyboard[0][0].url, "https://t.me/one")
         self.assertEqual(keyboard.inline_keyboard[1][0].url, "https://t.me/two")
 
+    def test_main_menu_contains_points_and_invite_rank_buttons(self) -> None:
+        keyboard = main_menu(())
+        callback_data = {
+            button.callback_data
+            for row in keyboard.inline_keyboard
+            for button in row
+            if button.callback_data
+        }
+
+        self.assertIn("menu:pointrank", callback_data)
+        self.assertIn("menu:rank", callback_data)
+
     def test_router_builds_with_private_child_and_group_guards(self) -> None:
         settings = Settings(
             bot_token="123456:dummy-token",

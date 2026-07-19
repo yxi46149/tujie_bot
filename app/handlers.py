@@ -36,6 +36,7 @@ from app.texts import (
     invites_message,
     my_cards_message,
     points_message,
+    points_rank_message,
     profile,
     rank_message,
 )
@@ -205,6 +206,9 @@ def build_router(settings: Settings, db: Database) -> Router:
 
     async def render_rank() -> str:
         return rank_message(await db.get_rank())
+
+    async def render_points_rank() -> str:
+        return points_rank_message(await db.get_points_rank())
 
     def is_lottery_prize_drawable(prize: object) -> bool:
         if str(prize["prize_type"]) != "product":  # type: ignore[index]
@@ -667,6 +671,11 @@ def build_router(settings: Settings, db: Database) -> Router:
         await ensure_message_user(message)
         await message.answer(await render_rank())
 
+    @router.message(Command("pointrank"))
+    async def command_points_rank(message: Message) -> None:
+        await ensure_message_user(message)
+        await message.answer(await render_points_rank())
+
     @router.message(Command("help"))
     async def command_help(message: Message) -> None:
         await ensure_message_user(message)
@@ -718,6 +727,12 @@ def build_router(settings: Settings, db: Database) -> Router:
         await callback.answer()
         await ensure_callback_user(callback)
         await answer_callback(callback, bot, await render_rank())
+
+    @router.callback_query(F.data == "menu:pointrank")
+    async def callback_points_rank(callback: CallbackQuery, bot: Bot) -> None:
+        await callback.answer()
+        await ensure_callback_user(callback)
+        await answer_callback(callback, bot, await render_points_rank())
 
     @router.callback_query(F.data == "menu:help")
     async def callback_help(callback: CallbackQuery, bot: Bot) -> None:

@@ -19,8 +19,9 @@ def profile(user_id: int, points: int, invite_reward: int) -> str:
         "6️⃣ 每日签到：/checkin\n"
         "7️⃣ 积分商城：/shop\n"
         "8️⃣ 积分抽奖：/lottery\n"
-        "9️⃣ 邀请排行：/rank\n"
-        "🔟 我的卡密：/mycards\n"
+        "9️⃣ 积分排行：/pointrank\n"
+        "🔟 邀请排行：/rank\n"
+        "🎟 我的卡密：/mycards\n"
         "----------------------------------------\n"
         "⚠️ 邀请好友加入指定群/频道并通过 /verify 后，"
         f"您将获得 <b>{invite_reward}</b> 积分。"
@@ -38,6 +39,7 @@ def help_message(invite_reward: int, checkin_reward: int) -> str:
         "• /shop —— 积分商城\n"
         "• /lottery —— 消耗积分参与抽奖\n"
         "• /mycards —— 查看已兑换卡密，发送失败时也可找回\n"
+        "• /pointrank —— 查看积分排行榜\n"
         "• /rank —— 查看邀请排行榜\n\n"
         f"💡 每邀请 1 位好友完成验证 +{invite_reward} 积分；"
         f"每日签到 +{checkin_reward} 积分。"
@@ -89,6 +91,22 @@ def rank_message(rows: Sequence[object]) -> str:
         prefix = medals[index - 1] if index <= 3 else f"{index}."
         lines.append(
             f"{prefix} {escape(display)} — <b>{int(row['invite_count'])}</b> 人"  # type: ignore[index]
+        )
+    return "\n".join(lines)
+
+
+def points_rank_message(rows: Sequence[object]) -> str:
+    if not rows:
+        return "💎 <b>积分排行榜</b>\n\n暂时还没有用户拥有积分。"
+    medals = ["🥇", "🥈", "🥉"]
+    lines = ["💎 <b>积分排行榜</b>", ""]
+    for index, row in enumerate(rows, start=1):
+        username = row["username"]  # type: ignore[index]
+        first_name = str(row["first_name"] or "用户")  # type: ignore[index]
+        display = f"@{username}" if username else first_name
+        prefix = medals[index - 1] if index <= 3 else f"{index}."
+        lines.append(
+            f"{prefix} {escape(display)} — <b>{int(row['points'])}</b> 积分"  # type: ignore[index]
         )
     return "\n".join(lines)
 

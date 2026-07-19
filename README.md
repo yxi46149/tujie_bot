@@ -88,6 +88,7 @@ python -m app.main
 | `/shop` | 积分商城 |
 | `/lottery` | 积分抽奖 |
 | `/mycards` | 找回最近兑换的卡密 |
+| `/pointrank` | 积分排行榜 |
 | `/rank` | 已验证邀请排行榜 |
 | `/help` | 使用说明 |
 

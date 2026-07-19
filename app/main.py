@@ -26,6 +26,7 @@ async def set_commands(bot: Bot) -> None:
         BotCommand(command="shop", description="积分商城"),
         BotCommand(command="lottery", description="积分抽奖"),
         BotCommand(command="mycards", description="查看我的卡密"),
+        BotCommand(command="pointrank", description="积分排行榜"),
         BotCommand(command="rank", description="邀请排行榜"),
         BotCommand(command="help", description="使用说明"),
         BotCommand(command="grouplottery", description="管理员发起群抽奖"),

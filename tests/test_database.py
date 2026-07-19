@@ -134,6 +134,18 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(inviter["points"], 5)
         self.assertEqual(await self.db.get_invite_counts(100), (2, 0))
 
+    async def test_points_rank_orders_by_points_and_omits_zero_points(self) -> None:
+        await self.db.register_user(100, "one", "用户一")
+        await self.db.register_user(101, "two", "用户二")
+        await self.db.register_user(102, "zero", "零积分")
+        await self.db.adjust_points(100, 5)
+        await self.db.adjust_points(101, 8)
+
+        rows = await self.db.get_points_rank()
+
+        self.assertEqual([row["user_id"] for row in rows], [101, 100])
+        self.assertEqual([row["points"] for row in rows], [8, 5])
+
     async def test_concurrent_replay_only_redeems_one_card(self) -> None:
         await self.db.register_user(100, None, "用户")
         await self.db.adjust_points(100, 20)

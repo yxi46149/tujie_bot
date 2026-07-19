@@ -582,6 +582,20 @@ class Database:
             )
             return list(await cursor.fetchall())
 
+    async def get_points_rank(self, limit: int = 10) -> list[aiosqlite.Row]:
+        async with self.connection() as db:
+            cursor = await db.execute(
+                """
+                SELECT user_id, username, first_name, points
+                FROM users
+                WHERE points > 0
+                ORDER BY points DESC, updated_at ASC, user_id ASC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+            return list(await cursor.fetchall())
+
     async def list_lottery_prizes(
         self, active_only: bool = True
     ) -> list[aiosqlite.Row]:
