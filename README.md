@@ -1,6 +1,6 @@
 # Telegram 邀请积分与卡密兑换机器人
 
-基于 Python、aiogram 3 和 SQLite，实现截图中的主要功能：
+基于 Python、aiogram 3 和 SQLite，实现主要功能：
 
 > 当前版本：`v0.1.0`（文档更新于 2026-07-19）。本项目只使用
 > **SQLite**，默认数据库文件为 `data/bot.db`，不需要安装或配置
@@ -215,11 +215,26 @@ python -m scripts.check_bot
 .\scripts\package.ps1 -Version 0.1.0
 ```
 
-Linux systemd 服务器升级可以直接上传 ZIP 后执行：
+Linux systemd 服务器升级时，在服务器的项目根目录执行一键升级脚本。项目根目录是包含 `app/`、`scripts/`、`.env`、`.venv` 的目录，例如 `/home/ubuntu/bot/tujie_bot`：
 
 ```bash
 cd /home/ubuntu/bot/tujie_bot
 bash scripts/upgrade_server.sh /home/ubuntu/bot/tujie_bot-v0.1.0.zip
+```
+
+如果发布包放在项目上一级目录，并且文件名是 `tujie_bot-v*.zip`，可以省略 ZIP 路径，脚本会自动选择时间最新的包：
+
+```bash
+cd /home/ubuntu/bot/tujie_bot
+bash scripts/upgrade_server.sh
+```
+
+推荐服务器目录结构：
+
+```text
+/home/ubuntu/bot/tujie_bot
+/home/ubuntu/bot/tujie_bot-v0.1.1.zip
+/home/ubuntu/bot/tujie_bot-v0.1.2.zip
 ```
 
 Docker 启动：
