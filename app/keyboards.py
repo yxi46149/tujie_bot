@@ -29,7 +29,7 @@ def main_menu(join_buttons: Sequence[tuple[str, str]]) -> InlineKeyboardMarkup:
                 ),
             ],
             [
-                InlineKeyboardButton(text="🛒 兑换卡密", callback_data="menu:shop"),
+                InlineKeyboardButton(text="🛒 积分商城", callback_data="menu:shop"),
                 InlineKeyboardButton(text="🎟 我的卡密", callback_data="menu:mycards"),
             ],
             [

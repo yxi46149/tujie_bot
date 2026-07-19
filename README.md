@@ -85,7 +85,7 @@ python -m app.main
 | `/invite` | 生成 `?start=ref_用户ID` 专属链接 |
 | `/myinvites` | 邀请记录与结算状态 |
 | `/checkin` | 每日签到 |
-| `/shop` | 卡密商城 |
+| `/shop` | 积分商城 |
 | `/lottery` | 积分抽奖 |
 | `/mycards` | 找回最近兑换的卡密 |
 | `/rank` | 已验证邀请排行榜 |

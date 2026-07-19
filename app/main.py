@@ -23,7 +23,7 @@ async def set_commands(bot: Bot) -> None:
         BotCommand(command="invite", description="生成邀请入口"),
         BotCommand(command="myinvites", description="查看我的邀请"),
         BotCommand(command="checkin", description="每日签到"),
-        BotCommand(command="shop", description="兑换卡密"),
+        BotCommand(command="shop", description="积分商城"),
         BotCommand(command="lottery", description="积分抽奖"),
         BotCommand(command="mycards", description="查看我的卡密"),
         BotCommand(command="rank", description="邀请排行榜"),
