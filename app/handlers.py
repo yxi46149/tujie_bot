@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from html import escape
 from math import ceil
+from secrets import randbelow
 from time import monotonic
 
 from aiogram import Bot, F, Router
@@ -18,13 +19,20 @@ from aiogram.exceptions import (
     TelegramRetryAfter,
 )
 from aiogram.filters import Command, CommandObject, CommandStart
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
+from aiogram.types import (
+    CallbackQuery,
+    ChatPermissions,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 
 from app.config import ChatId, Settings
 from app.database import Database
 from app.group_lottery import (
     GROUP_LOTTERY_USAGE,
     deliver_group_lottery_result,
+    format_draw_at,
     group_lottery_announcement,
     parse_group_lottery_command,
     participation_message,
@@ -52,6 +60,13 @@ class MembershipCheck:
     errors: tuple[ChatId, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class HumanVerifyChallenge:
+    question: str
+    answer: int
+    options: tuple[int, ...]
+
+
 def parse_inviter(payload: str | None) -> int | None:
     if not payload or not payload.startswith("ref_"):
         return None
@@ -70,6 +85,35 @@ def is_member_status(member: object) -> bool:
     return status == ChatMemberStatus.RESTRICTED and bool(
         getattr(member, "is_member", False)
     )
+
+
+def shuffled_numbers(values: set[int]) -> tuple[int, ...]:
+    pool = list(values)
+    result: list[int] = []
+    while pool:
+        result.append(pool.pop(randbelow(len(pool))))
+    return tuple(result)
+
+
+def create_human_verify_challenge() -> HumanVerifyChallenge:
+    left = randbelow(8) + 2
+    right = randbelow(8) + 1
+    if randbelow(2) == 0:
+        question = f"{left} + {right}"
+        answer = left + right
+    else:
+        high = max(left, right)
+        low = min(left, right)
+        question = f"{high} - {low}"
+        answer = high - low
+
+    options = {answer}
+    while len(options) < 3:
+        delta = randbelow(5) + 1
+        candidate = answer + delta if randbelow(2) == 0 else answer - delta
+        if candidate >= 0:
+            options.add(candidate)
+    return HumanVerifyChallenge(question, answer, shuffled_numbers(options))
 
 
 async def check_membership(
@@ -136,6 +180,56 @@ def build_router(settings: Settings, db: Database) -> Router:
 
     def is_group_chat(message: Message) -> bool:
         return message.chat.type in {ChatType.GROUP, ChatType.SUPERGROUP}
+
+    def is_human_verify_chat(message: Message) -> bool:
+        if not settings.human_verify_enabled or not is_group_chat(message):
+            return False
+        if not settings.human_verify_chat_ids:
+            return True
+        chat_username = message.chat.username
+        chat_handles = {chat_username, f"@{chat_username}"} if chat_username else set()
+        for chat_id in settings.human_verify_chat_ids:
+            if isinstance(chat_id, int) and chat_id == message.chat.id:
+                return True
+            if isinstance(chat_id, str) and chat_id in chat_handles:
+                return True
+        return False
+
+    def muted_permissions() -> ChatPermissions:
+        return ChatPermissions(can_send_messages=False)
+
+    def verified_member_permissions() -> ChatPermissions:
+        return ChatPermissions(
+            can_send_messages=True,
+            can_send_audios=True,
+            can_send_documents=True,
+            can_send_photos=True,
+            can_send_videos=True,
+            can_send_video_notes=True,
+            can_send_voice_notes=True,
+            can_send_polls=True,
+            can_send_other_messages=True,
+            can_add_web_page_previews=True,
+            can_react_to_messages=True,
+        )
+
+    async def unmute_human_verified_member(
+        bot: Bot, chat_id: int, user_id: int
+    ) -> bool:
+        try:
+            await bot.restrict_chat_member(
+                chat_id=chat_id,
+                user_id=user_id,
+                permissions=verified_member_permissions(),
+            )
+        except TelegramAPIError:
+            logger.exception(
+                "新人验证通过但解除禁言失败，chat_id=%s user_id=%s",
+                chat_id,
+                user_id,
+            )
+            return False
+        return True
 
     def verification_cooldown_remaining(user_id: int) -> int:
         cooldown = settings.verify_cooldown_seconds
@@ -439,6 +533,166 @@ def build_router(settings: Settings, db: Database) -> Router:
                 bot, db, lottery_id, cancel_on_failure=True
             )
 
+    def group_lotteries_message(rows: list[object]) -> str:
+        if not rows:
+            return "🎲 当前群没有未开奖的群抽奖。"
+        lines = ["🎲 <b>当前群未开奖抽奖</b>", ""]
+        for row in rows:
+            prize_type = str(row["prize_type"])  # type: ignore[index]
+            if prize_type == "points":
+                prize = f"{int(row['points_delta'])} 积分"  # type: ignore[index]
+            else:
+                product_name = row["product_name"] or f"商品 #{row['product_id']}"  # type: ignore[index]
+                prize = f"{escape(str(product_name))} 卡密"
+
+            draw_mode = str(row["draw_mode"])  # type: ignore[index]
+            participant_count = int(row["participant_count"] or 0)  # type: ignore[index]
+            if draw_mode == "count":
+                mode = (
+                    f"满人 {participant_count}/{int(row['target_participants'])}"  # type: ignore[index]
+                )
+            elif draw_mode == "time":
+                mode = f"定时 {escape(format_draw_at(row['draw_at']))}"  # type: ignore[index]
+            else:
+                mode = f"手动开奖，已参与 {participant_count}"
+
+            lines.append(
+                f"#{row['id']} {escape(str(row['title']))}｜"  # type: ignore[index]
+                f"{prize}｜中奖 {int(row['winner_count'])} 人｜{mode}"  # type: ignore[index]
+            )
+            trigger = str(row["trigger_text"] or "")  # type: ignore[index]
+            if trigger:
+                lines.append(f"口令：<code>{escape(trigger)}</code>")
+        lines.extend(["", "提前开奖：/drawlottery &lt;抽奖编号&gt;"])
+        return "\n".join(lines)
+
+    @root_router.message(F.new_chat_members)
+    async def human_verify_new_members(message: Message, bot: Bot) -> None:
+        if not is_human_verify_chat(message):
+            return
+
+        warning_sent = False
+        for member in message.new_chat_members or []:
+            if member.is_bot:
+                continue
+            expires_at = (
+                datetime.now(timezone.utc)
+                + timedelta(seconds=settings.human_verify_timeout_seconds)
+            ).isoformat(timespec="seconds")
+            try:
+                await bot.restrict_chat_member(
+                    chat_id=message.chat.id,
+                    user_id=member.id,
+                    permissions=muted_permissions(),
+                )
+            except TelegramAPIError:
+                logger.exception(
+                    "新人验证无法限制成员，chat_id=%s user_id=%s",
+                    message.chat.id,
+                    member.id,
+                )
+                if not warning_sent:
+                    await message.answer(
+                        "⚠️ 新人验证需要机器人拥有“限制成员”权限，请检查群管理员权限。"
+                    )
+                    warning_sent = True
+                continue
+
+            challenge = create_human_verify_challenge()
+            token = await db.create_human_verification(
+                message.chat.id,
+                member.id,
+                member.username,
+                member.first_name,
+                expires_at,
+                challenge.answer,
+            )
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text=str(option),
+                            callback_data=(
+                                f"humanverify:{member.id}:{token}:{option}"
+                            ),
+                        )
+                        for option in challenge.options
+                    ]
+                ]
+            )
+            display_name = escape(member.full_name or member.first_name or "新成员")
+            timeout_minutes = max(
+                1, ceil(settings.human_verify_timeout_seconds / 60)
+            )
+            try:
+                await message.answer(
+                    f'<a href="tg://user?id={member.id}">{display_name}</a> '
+                    f"欢迎入群，请在 <b>{timeout_minutes}</b> 分钟内完成验证。\n\n"
+                    f"请回答：<b>{escape(challenge.question)}</b> = ?\n"
+                    "选择正确答案后会自动解除发言限制。",
+                    reply_markup=keyboard,
+                )
+            except TelegramAPIError:
+                logger.exception(
+                    "新人验证消息发送失败，chat_id=%s user_id=%s",
+                    message.chat.id,
+                    member.id,
+                )
+                await unmute_human_verified_member(bot, message.chat.id, member.id)
+
+        try:
+            await message.delete()
+        except TelegramAPIError:
+            logger.info("无法删除新人入群系统消息，chat_id=%s", message.chat.id)
+
+    @root_router.callback_query(F.data.startswith("humanverify:"))
+    async def callback_human_verify(callback: CallbackQuery, bot: Bot) -> None:
+        if not callback.message:
+            await callback.answer("验证消息已失效。", show_alert=True)
+            return
+        parts = str(callback.data).split(":", maxsplit=3)
+        if len(parts) != 4 or not parts[1].isdigit():
+            await callback.answer("验证参数无效。", show_alert=True)
+            return
+        target_user_id = int(parts[1])
+        token = parts[2]
+        try:
+            selected_answer = int(parts[3])
+        except ValueError:
+            await callback.answer("验证答案无效。", show_alert=True)
+            return
+        if callback.from_user.id != target_user_id:
+            await callback.answer("这不是你的验证按钮。", show_alert=True)
+            return
+
+        chat_id = callback.message.chat.id
+        status = await db.complete_human_verification(
+            chat_id, target_user_id, token, selected_answer
+        )
+        if status in {"ok", "already_verified"}:
+            if await unmute_human_verified_member(bot, chat_id, target_user_id):
+                await callback.answer("验证通过，欢迎入群。", show_alert=True)
+                try:
+                    await callback.message.delete()
+                except TelegramAPIError:
+                    await callback.message.edit_text("✅ 人机验证已通过。")
+            else:
+                await callback.answer(
+                    "验证已记录，但机器人缺少解除禁言权限，请联系管理员。",
+                    show_alert=True,
+                )
+            return
+        if status == "expired":
+            await callback.answer(
+                "验证已过期，请联系管理员或重新进群触发验证。",
+                show_alert=True,
+            )
+            return
+        if status == "invalid_answer":
+            await callback.answer("答案不对，再想一下。", show_alert=True)
+            return
+        await callback.answer("验证失败，请重新进群触发验证。", show_alert=True)
+
     @root_router.message(Command("grouplottery"))
     async def command_group_lottery(
         message: Message, command: CommandObject
@@ -584,6 +838,17 @@ def build_router(settings: Settings, db: Database) -> Router:
             await message.reply("❌ 这个抽奖不存在或不属于当前群。")
             return
         await deliver_group_lottery_result(bot, db, lottery_id)
+
+    @root_router.message(Command("lotteries"))
+    async def command_group_lotteries(message: Message) -> None:
+        if not is_group_chat(message):
+            await message.answer("请在群聊中查看群抽奖列表。")
+            return
+        if not is_admin(message):
+            await message.reply("⛔ 只有机器人管理员可以查看群抽奖列表。")
+            return
+        rows = await db.list_pending_group_lotteries(message.chat.id)
+        await message.reply(group_lotteries_message(rows))
 
     @root_router.message(F.chat.type != ChatType.PRIVATE, F.text)
     async def group_lottery_phrase(message: Message, bot: Bot) -> None:
@@ -874,6 +1139,7 @@ def build_router(settings: Settings, db: Database) -> Router:
             "/addlotteryprize &lt;权重&gt; &lt;类型&gt; ... — 新增抽奖奖品\n"
             "/togglelotteryprize &lt;奖品ID&gt; — 开关抽奖奖品\n"
             "/grouplottery &lt;类型&gt; ... — 在群里发起抽奖\n"
+            "/lotteries — 查看当前群未开奖抽奖\n"
             "/drawlottery &lt;抽奖编号&gt; — 在群里开奖\n"
             "/addpoints &lt;用户ID&gt; &lt;数量&gt; — 调整积分"
         )

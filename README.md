@@ -15,6 +15,7 @@
 - 积分商城、卡密库存和原子兑换
 - 积分抽奖、权重奖池、积分/卡密/空奖奖品
 - 管理员群抽奖、口令参与、定时/满人开奖和私聊卡密兑奖
+- 新人进群人机验证、验证通过后自动解除发言限制
 - 一次性兑换确认、防重复扣分和 `/mycards` 卡密找回
 - 管理员创建商品、批量导入卡密、上下架和调整积分
 - 私聊隔离、验证冷却与邀请奖励每日上限
@@ -27,6 +28,7 @@
 
 > `getChatMember` 只有在机器人是群/频道管理员时才可靠。若配置多个 `REQUIRED_CHAT_IDS`，用户必须全部加入才算验证通过。
 > 群抽奖使用“发送口令参与”时，需要在 `@BotFather` 里把机器人的 privacy mode 设为 Disable，否则机器人收不到群里的普通文本。
+> 新人进群人机验证需要机器人在目标群里拥有“限制成员”权限；若要清理验证消息，还需要“删除消息”权限。
 
 ## 2. 安装与配置
 
@@ -55,6 +57,9 @@ LOTTERY_COST=5
 VERIFY_COOLDOWN_SECONDS=15
 VERIFY_MAX_CONCURRENCY=5
 REDEMPTION_INTENT_TTL_SECONDS=600
+HUMAN_VERIFY_ENABLED=false
+HUMAN_VERIFY_CHAT_IDS=
+HUMAN_VERIFY_TIMEOUT_SECONDS=300
 TIMEZONE=Asia/Shanghai
 DATABASE_PATH=data/bot.db
 ```
@@ -118,6 +123,7 @@ python -m app.main
 /togglelotteryprize 1
 /grouplottery points 20 3 time 10m 抽奖 群福利积分抽奖
 /grouplottery product 1 1 count 50 抽卡 群福利卡密抽奖
+/lotteries
 /drawlottery 1
 /addpoints 123456789 20
 ```
@@ -154,10 +160,23 @@ python -m scripts.import_cards 1 .\codes.txt
 ```text
 /grouplottery points 20 3 time 10m 抽奖 群福利积分抽奖
 /grouplottery product 1 1 count 50 抽卡 群福利卡密抽奖
+/lotteries
 /drawlottery 1
 ```
 
 `time` 表示定时开奖，时长支持 `s/m/h/d` 或 `秒/分钟/小时/天`；纯数字按分钟处理。`count` 表示参与人数达到指定数量后自动开奖。群成员在本群发送完全一致的参与口令即可参加，机器人会回复当前参与人数，并在新的成功参与反馈发出后删除上一条反馈。若配置了 `REQUIRED_CHAT_IDS`，参与时也会检查是否已加入全部指定群/频道。积分奖开奖后直接到账；卡密奖不会发在群里，只会私聊中奖者，并写入 `/mycards` 方便找回。
+
+管理员可在群里发送 `/lotteries` 查看当前群未开奖抽奖编号，再用 `/drawlottery <编号>` 提前开奖。
+
+新人进群验证默认关闭。启用后，新入群用户会先被限制发言，机器人会发送一道简单算术题，用户选择正确答案后自动解除限制：
+
+```dotenv
+HUMAN_VERIFY_ENABLED=true
+HUMAN_VERIFY_CHAT_IDS=-1001234567890
+HUMAN_VERIFY_TIMEOUT_SECONDS=300
+```
+
+`HUMAN_VERIFY_CHAT_IDS` 为空时表示所有群都启用；也可以填写多个 `-100...` 或 `@username`，用英文逗号分隔。
 
 更完整的本地启动、配置来源和业务操作流程见 [docs/OPERATION_GUIDE.md](docs/OPERATION_GUIDE.md)。
 

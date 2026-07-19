@@ -146,6 +146,40 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([row["user_id"] for row in rows], [101, 100])
         self.assertEqual([row["points"] for row in rows], [8, 5])
 
+    async def test_human_verification_token_completes_once(self) -> None:
+        expires_at = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(
+            timespec="seconds"
+        )
+        token = await self.db.create_human_verification(
+            -1001, 200, "user", "用户", expires_at, 12
+        )
+
+        invalid = await self.db.complete_human_verification(
+            -1001, 200, "bad-token", 12
+        )
+        wrong_answer = await self.db.complete_human_verification(
+            -1001, 200, token, 13
+        )
+        completed = await self.db.complete_human_verification(-1001, 200, token, 12)
+        repeated = await self.db.complete_human_verification(-1001, 200, token, 12)
+
+        self.assertEqual(invalid, "invalid_token")
+        self.assertEqual(wrong_answer, "invalid_answer")
+        self.assertEqual(completed, "ok")
+        self.assertEqual(repeated, "already_verified")
+
+    async def test_expired_human_verification_token_is_rejected(self) -> None:
+        expires_at = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat(
+            timespec="seconds"
+        )
+        token = await self.db.create_human_verification(
+            -1001, 200, "user", "用户", expires_at, 12
+        )
+
+        completed = await self.db.complete_human_verification(-1001, 200, token, 12)
+
+        self.assertEqual(completed, "expired")
+
     async def test_concurrent_replay_only_redeems_one_card(self) -> None:
         await self.db.register_user(100, None, "用户")
         await self.db.adjust_points(100, 20)
@@ -381,6 +415,52 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual([row["id"] for row in due], [due_created.lottery_id])
+
+    async def test_pending_group_lotteries_are_listed_for_chat(self) -> None:
+        await self.db.register_user(100, None, "管理员")
+        await self.db.register_user(200, "one", "用户一")
+        first = await self.db.create_group_lottery(
+            -1001,
+            100,
+            "第一个抽奖",
+            "points",
+            5,
+            1,
+            trigger_text="抽奖1",
+            draw_mode="count",
+            target_participants=2,
+        )
+        second = await self.db.create_group_lottery(
+            -1001,
+            100,
+            "第二个抽奖",
+            "points",
+            8,
+            1,
+            trigger_text="抽奖2",
+            draw_mode="time",
+            draw_at=(datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(
+                timespec="seconds"
+            ),
+        )
+        other_chat = await self.db.create_group_lottery(
+            -1002,
+            100,
+            "其他群抽奖",
+            "points",
+            1,
+            1,
+            trigger_text="其他",
+            draw_mode="count",
+            target_participants=2,
+        )
+        await self.db.join_group_lottery(first.lottery_id, 200, "one", "用户一")
+        await self.db.draw_group_lottery(other_chat.lottery_id)
+
+        rows = await self.db.list_pending_group_lotteries(-1001)
+
+        self.assertEqual([row["id"] for row in rows], [second.lottery_id, first.lottery_id])
+        self.assertEqual(int(rows[1]["participant_count"]), 1)
 
     async def test_initialize_upgrades_legacy_database_without_losing_users(
         self,

@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from hmac import compare_digest
 from pathlib import Path
 from secrets import randbelow, token_urlsafe
 from typing import AsyncIterator, Iterable
@@ -328,6 +329,24 @@ class Database:
 
                 CREATE INDEX IF NOT EXISTS idx_group_lottery_winners_user
                     ON group_lottery_winners(user_id, lottery_id DESC);
+
+                CREATE TABLE IF NOT EXISTS human_verifications (
+                    chat_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    username TEXT,
+                    first_name TEXT NOT NULL DEFAULT '',
+                    token TEXT NOT NULL,
+                    challenge_answer INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'pending'
+                        CHECK(status IN ('pending', 'verified', 'expired')),
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    verified_at TEXT,
+                    PRIMARY KEY(chat_id, user_id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_human_verifications_status
+                    ON human_verifications(status, expires_at);
                 """
             )
             await self._ensure_columns(
@@ -339,6 +358,13 @@ class Database:
                     "target_participants": "INTEGER",
                     "draw_at": "TEXT",
                     "last_feedback_message_id": "INTEGER",
+                },
+            )
+            await self._ensure_columns(
+                db,
+                "human_verifications",
+                {
+                    "challenge_answer": "INTEGER NOT NULL DEFAULT 0",
                 },
             )
             await db.executescript(
@@ -595,6 +621,102 @@ class Database:
                 (limit,),
             )
             return list(await cursor.fetchall())
+
+    async def create_human_verification(
+        self,
+        chat_id: int,
+        user_id: int,
+        username: str | None,
+        first_name: str,
+        expires_at: str,
+        challenge_answer: int,
+    ) -> str:
+        token = token_urlsafe(8)
+        now = utc_now()
+        async with self.connection() as db:
+            await db.execute(
+                """
+                INSERT INTO human_verifications(
+                    chat_id, user_id, username, first_name, token, challenge_answer,
+                    status, created_at, expires_at, verified_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, NULL)
+                ON CONFLICT(chat_id, user_id) DO UPDATE SET
+                    username = excluded.username,
+                    first_name = excluded.first_name,
+                    token = excluded.token,
+                    challenge_answer = excluded.challenge_answer,
+                    status = 'pending',
+                    created_at = excluded.created_at,
+                    expires_at = excluded.expires_at,
+                    verified_at = NULL
+                """,
+                (
+                    chat_id,
+                    user_id,
+                    username,
+                    first_name,
+                    token,
+                    challenge_answer,
+                    now,
+                    expires_at,
+                ),
+            )
+            await db.commit()
+        return token
+
+    async def complete_human_verification(
+        self, chat_id: int, user_id: int, token: str, selected_answer: int
+    ) -> str:
+        now = utc_now()
+        async with self.connection() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            row = await (
+                await db.execute(
+                    """
+                    SELECT token, challenge_answer, status, expires_at
+                    FROM human_verifications
+                    WHERE chat_id = ? AND user_id = ?
+                    """,
+                    (chat_id, user_id),
+                )
+            ).fetchone()
+            if not row:
+                await db.rollback()
+                return "not_found"
+            status = str(row["status"])
+            if status == "verified":
+                await db.rollback()
+                return "already_verified"
+            if status != "pending":
+                await db.rollback()
+                return status
+            if not compare_digest(str(row["token"]), token):
+                await db.rollback()
+                return "invalid_token"
+            if str(row["expires_at"]) < now:
+                await db.execute(
+                    """
+                    UPDATE human_verifications
+                    SET status = 'expired'
+                    WHERE chat_id = ? AND user_id = ?
+                    """,
+                    (chat_id, user_id),
+                )
+                await db.commit()
+                return "expired"
+            if int(row["challenge_answer"]) != selected_answer:
+                await db.rollback()
+                return "invalid_answer"
+            await db.execute(
+                """
+                UPDATE human_verifications
+                SET status = 'verified', verified_at = ?
+                WHERE chat_id = ? AND user_id = ?
+                """,
+                (now, chat_id, user_id),
+            )
+            await db.commit()
+            return "ok"
 
     async def list_lottery_prizes(
         self, active_only: bool = True
@@ -1055,6 +1177,28 @@ class Database:
                     (chat_id, trigger_text.strip()),
                 )
             ).fetchone()
+
+    async def list_pending_group_lotteries(
+        self, chat_id: int, limit: int = 10
+    ) -> list[aiosqlite.Row]:
+        async with self.connection() as db:
+            cursor = await db.execute(
+                """
+                SELECT gl.*, p.name AS product_name,
+                       (
+                           SELECT COUNT(*)
+                           FROM group_lottery_participants glp
+                           WHERE glp.lottery_id = gl.id
+                       ) AS participant_count
+                FROM group_lotteries gl
+                LEFT JOIN products p ON p.id = gl.product_id
+                WHERE gl.chat_id = ? AND gl.status = 'pending'
+                ORDER BY gl.id DESC
+                LIMIT ?
+                """,
+                (chat_id, limit),
+            )
+            return list(await cursor.fetchall())
 
     async def list_due_group_lotteries(self, now: str) -> list[aiosqlite.Row]:
         async with self.connection() as db:

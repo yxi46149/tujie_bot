@@ -45,6 +45,9 @@ INVITE_REWARD=5
 INVITE_DAILY_REWARD_LIMIT=20
 CHECKIN_REWARD=1
 LOTTERY_COST=5
+HUMAN_VERIFY_ENABLED=false
+HUMAN_VERIFY_CHAT_IDS=
+HUMAN_VERIFY_TIMEOUT_SECONDS=300
 TIMEZONE=Asia/Shanghai
 DATABASE_PATH=data/bot.db
 ```
@@ -74,11 +77,34 @@ REQUIRED_CHAT_NAMES=通知频道,交流群
 1. 把机器人加入需要检查关注的频道/群。
 2. 在频道和群里把机器人设为管理员，否则 `getChatMember` 检查不稳定。
 3. 群抽奖如果用“发送口令参与”，需要找 `@BotFather` 执行 `/setprivacy`，选择你的机器人后设为 `Disable`。
-4. 如果希望机器人删除上一条参与反馈，建议在群里给机器人删除消息权限。
+4. 新人进群验证需要给机器人“限制成员”权限。
+5. 如果希望机器人删除上一条参与反馈或验证消息，建议在群里给机器人“删除消息”权限。
 
 注意：管理员命令只认 `.env` 的 `ADMIN_IDS`，不是谁在群里是群管理员谁就能操作。
 
-## 4. 商品和卡密
+## 4. 新人进群人机验证
+
+默认关闭。需要启用时，在 `.env` 里配置：
+
+```dotenv
+HUMAN_VERIFY_ENABLED=true
+HUMAN_VERIFY_CHAT_IDS=-1001234567890
+HUMAN_VERIFY_TIMEOUT_SECONDS=300
+```
+
+说明：
+
+| 参数 | 含义 |
+|---|---|
+| `HUMAN_VERIFY_ENABLED` | 是否启用新人进群验证 |
+| `HUMAN_VERIFY_CHAT_IDS` | 启用验证的群；为空表示所有群都启用 |
+| `HUMAN_VERIFY_TIMEOUT_SECONDS` | 验证按钮有效期，默认 300 秒 |
+
+启用后，新人进群会先被禁言。机器人会在群里发送一条本人专属算术题验证消息；用户选择正确答案后自动解除发言限制。别人点击该用户的验证按钮不会通过。
+
+如果按钮过期，用户仍会保持受限状态，需要管理员处理，或让用户重新进群触发新验证。
+
+## 5. 商品和卡密
 
 目前没有独立 Web 管理后台，管理都通过机器人管理员命令完成。只有 `ADMIN_IDS` 里的用户能使用 `/admin` 和相关命令。
 
@@ -125,7 +151,7 @@ Remove-Item .\data\bot.db
 
 如果是生产库，不建议直接清空。先备份 `data/bot.db`，再决定是否只下架商品或新建测试数据库。
 
-## 5. 个人积分抽奖
+## 6. 个人积分抽奖
 
 用户私聊机器人发送：
 
@@ -155,11 +181,11 @@ Remove-Item .\data\bot.db
 
 商品下架或库存为 0 时，对应卡密奖不会进入个人抽奖池。
 
-## 6. 群抽奖
+## 7. 群抽奖
 
 群抽奖只能由 `ADMIN_IDS` 里的管理员在群聊里发起。
 
-### 6.1 定时开奖
+### 7.1 定时开奖
 
 语法：
 
@@ -184,7 +210,7 @@ Remove-Item .\data\bot.db
 | `1d` / `1天` | 1 天 |
 | `10` | 10 分钟 |
 
-### 6.2 满人开奖
+### 7.2 满人开奖
 
 语法：
 
@@ -201,7 +227,7 @@ Remove-Item .\data\bot.db
 
 达到 50 人参与后自动开奖。
 
-### 6.3 多行写法
+### 7.3 多行写法
 
 如果参与口令或标题比较长，推荐多行写：
 
@@ -221,17 +247,18 @@ Remove-Item .\data\bot.db
 
 如果配置了 `REQUIRED_CHAT_IDS`，参与群抽奖时也会检查用户是否已经加入全部指定频道/群。
 
-### 6.4 手动开奖
+### 7.4 手动开奖
 
 管理员可以对未开奖抽奖手动开奖：
 
 ```text
+/lotteries
 /drawlottery 1
 ```
 
-`1` 是发起群抽奖后机器人返回的编号。
+`/lotteries` 会列出当前群所有未开奖抽奖，包括编号、标题、参与人数、开奖模式和口令。`/drawlottery 1` 中的 `1` 是抽奖编号。
 
-### 6.5 兑奖方式
+### 7.5 兑奖方式
 
 积分奖：开奖后直接给中奖用户加积分。
 
@@ -243,7 +270,7 @@ Remove-Item .\data\bot.db
 
 即可找回最近兑换或中奖的卡密。
 
-## 7. 常用检查命令
+## 8. 常用检查命令
 
 ```powershell
 python -m scripts.check_config
@@ -254,7 +281,7 @@ python -m compileall app scripts tests
 
 `check_config` 检查 `.env` 格式，`check_bot` 会调用 Telegram API 验证 Token 和基础连接。
 
-## 8. 常见问题
+## 9. 常见问题
 
 ### 群里发口令没反应
 

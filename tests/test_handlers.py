@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 
 from app.config import Settings
 from app.database import Database
-from app.handlers import answer_callback, build_router
+from app.handlers import answer_callback, build_router, create_human_verify_challenge
 from app.keyboards import main_menu
 
 
@@ -47,6 +47,13 @@ class HandlerSafetyTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("menu:pointrank", callback_data)
         self.assertIn("menu:rank", callback_data)
 
+    def test_human_verify_challenge_has_three_choices(self) -> None:
+        challenge = create_human_verify_challenge()
+
+        self.assertEqual(len(challenge.options), 3)
+        self.assertEqual(len(set(challenge.options)), 3)
+        self.assertIn(challenge.answer, challenge.options)
+
     def test_router_builds_with_private_child_and_group_guards(self) -> None:
         settings = Settings(
             bot_token="123456:dummy-token",
@@ -61,6 +68,9 @@ class HandlerSafetyTests(unittest.IsolatedAsyncioTestCase):
             verify_cooldown_seconds=15,
             verify_max_concurrency=5,
             redemption_intent_ttl_seconds=600,
+            human_verify_enabled=False,
+            human_verify_chat_ids=(),
+            human_verify_timeout_seconds=300,
             timezone_name="Asia/Shanghai",
             database_path=Path("unused.db"),
         )

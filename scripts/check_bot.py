@@ -52,6 +52,32 @@ async def run() -> int:
                 f"[通过] {label}：{chat.title or chat_id}，"
                 f"机器人状态 {membership.status}"
             )
+
+        if settings.human_verify_enabled:
+            if not settings.human_verify_chat_ids:
+                print("[警告] 新人验证已启用但未指定 HUMAN_VERIFY_CHAT_IDS，所有群都会尝试验证。")
+            for chat_id in settings.human_verify_chat_ids:
+                try:
+                    chat = await bot.get_chat(chat_id)
+                    membership = await bot.get_chat_member(chat_id, me.id)
+                except TelegramAPIError as exc:
+                    errors.append(f"新人验证群（{chat_id}）无法访问：{exc}")
+                    continue
+                if membership.status not in {
+                    ChatMemberStatus.ADMINISTRATOR,
+                    ChatMemberStatus.CREATOR,
+                }:
+                    errors.append(f"新人验证群（{chat_id}）中机器人不是管理员。")
+                    continue
+                if not bool(getattr(membership, "can_restrict_members", False)):
+                    errors.append(
+                        f"新人验证群（{chat_id}）中机器人缺少“限制成员”权限。"
+                    )
+                    continue
+                print(
+                    f"[通过] 新人验证群：{chat.title or chat_id}，"
+                    "机器人具备限制成员权限"
+                )
     finally:
         await bot.session.close()
 

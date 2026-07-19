@@ -41,6 +41,17 @@ def _parse_strings(value: str) -> tuple[str, ...]:
     return tuple(item.strip() for item in value.split(",") if item.strip())
 
 
+def _parse_bool(value: str, *, default: bool = False) -> bool:
+    normalized = value.strip().lower()
+    if not normalized:
+        return default
+    if normalized in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    if normalized in {"0", "false", "no", "off", "disabled"}:
+        return False
+    raise ValueError(f"无法识别布尔配置：{value}")
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     bot_token: str
@@ -55,6 +66,9 @@ class Settings:
     verify_cooldown_seconds: int
     verify_max_concurrency: int
     redemption_intent_ttl_seconds: int
+    human_verify_enabled: bool
+    human_verify_chat_ids: tuple[ChatId, ...]
+    human_verify_timeout_seconds: int
     timezone_name: str
     database_path: Path
 
@@ -99,6 +113,11 @@ class Settings:
         redemption_intent_ttl_seconds = int(
             os.getenv("REDEMPTION_INTENT_TTL_SECONDS", "600")
         )
+        human_verify_enabled = _parse_bool(os.getenv("HUMAN_VERIFY_ENABLED", "false"))
+        human_verify_chat_ids = _parse_chat_ids(os.getenv("HUMAN_VERIFY_CHAT_IDS", ""))
+        human_verify_timeout_seconds = int(
+            os.getenv("HUMAN_VERIFY_TIMEOUT_SECONDS", "300")
+        )
         if (
             min(
                 invite_reward,
@@ -106,16 +125,19 @@ class Settings:
                 checkin_reward,
                 lottery_cost,
                 verify_cooldown_seconds,
+                human_verify_timeout_seconds,
             )
             < 0
         ):
-            raise RuntimeError("积分、每日上限和冷却时间不能为负数。")
+            raise RuntimeError("积分、每日上限、冷却时间和验证超时时间不能为负数。")
         if lottery_cost <= 0:
             raise RuntimeError("LOTTERY_COST 必须大于 0。")
         if verify_max_concurrency < 1:
             raise RuntimeError("VERIFY_MAX_CONCURRENCY 必须大于 0。")
         if redemption_intent_ttl_seconds < 60:
             raise RuntimeError("REDEMPTION_INTENT_TTL_SECONDS 不能小于 60。")
+        if human_verify_enabled and human_verify_timeout_seconds < 30:
+            raise RuntimeError("HUMAN_VERIFY_TIMEOUT_SECONDS 不能小于 30。")
 
         timezone_name = os.getenv("TIMEZONE", "Asia/Shanghai").strip()
         try:
@@ -136,6 +158,9 @@ class Settings:
             verify_cooldown_seconds=verify_cooldown_seconds,
             verify_max_concurrency=verify_max_concurrency,
             redemption_intent_ttl_seconds=redemption_intent_ttl_seconds,
+            human_verify_enabled=human_verify_enabled,
+            human_verify_chat_ids=human_verify_chat_ids,
+            human_verify_timeout_seconds=human_verify_timeout_seconds,
             timezone_name=timezone_name,
             database_path=database_path,
         )

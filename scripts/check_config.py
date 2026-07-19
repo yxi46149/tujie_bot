@@ -42,6 +42,12 @@ async def run() -> int:
     print("[通过] BOT_TOKEN 格式有效（未连接 Telegram）")
     print(f"[通过] 管理员数量：{len(settings.admin_ids)}")
     print(f"[通过] 必加群/频道数量：{len(settings.required_chat_ids)}")
+    print(
+        "[通过] 新人进群验证："
+        f"{'启用' if settings.human_verify_enabled else '关闭'}，"
+        f"目标群 {len(settings.human_verify_chat_ids) or '全部'}，"
+        f"超时 {settings.human_verify_timeout_seconds} 秒"
+    )
     print(f"[通过] 时区：{settings.timezone_name}")
     print(f"[通过] 数据库：{settings.database_path}")
     print(

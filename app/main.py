@@ -30,6 +30,7 @@ async def set_commands(bot: Bot) -> None:
         BotCommand(command="rank", description="邀请排行榜"),
         BotCommand(command="help", description="使用说明"),
         BotCommand(command="grouplottery", description="管理员发起群抽奖"),
+        BotCommand(command="lotteries", description="管理员查看群抽奖"),
         BotCommand(command="drawlottery", description="管理员群抽奖开奖"),
     ]
     await bot.set_my_commands(commands)
