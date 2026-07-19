@@ -5,6 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from aiogram import Dispatcher
+
 from app.config import Settings
 from app.database import Database
 from app.handlers import answer_callback, build_router, create_human_verify_challenge
@@ -80,6 +82,11 @@ class HandlerSafetyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(router.sub_routers), 1)
         self.assertGreaterEqual(len(router.message.handlers), 1)
         self.assertGreaterEqual(len(router.callback_query.handlers), 1)
+        self.assertGreaterEqual(len(router.chat_member.handlers), 1)
+
+        dispatcher = Dispatcher()
+        dispatcher.include_router(router)
+        self.assertIn("chat_member", dispatcher.resolve_used_update_types())
 
     def test_points_rank_command_is_available_from_root_router(self) -> None:
         settings = Settings(

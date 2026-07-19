@@ -22,9 +22,11 @@ from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import (
     CallbackQuery,
     ChatPermissions,
+    ChatMemberUpdated,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
+    User,
 )
 
 from app.config import ChatId, Settings
@@ -173,6 +175,7 @@ def build_router(settings: Settings, db: Database) -> Router:
     router.callback_query.filter(F.message.chat.type == ChatType.PRIVATE)
 
     verification_attempts: dict[int, float] = {}
+    recent_human_verifications: dict[tuple[int, int], float] = {}
     verification_semaphore = asyncio.Semaphore(settings.verify_max_concurrency)
 
     def is_admin(message: Message) -> bool:
@@ -230,6 +233,82 @@ def build_router(settings: Settings, db: Database) -> Router:
             )
             return False
         return True
+
+    async def start_human_verification(
+        bot: Bot, chat_id: int, member: User
+    ) -> str:
+        if member.is_bot:
+            return "skipped"
+
+        now_monotonic = monotonic()
+        recent_key = (chat_id, member.id)
+        for key, value in list(recent_human_verifications.items()):
+            if now_monotonic - value > 10:
+                recent_human_verifications.pop(key, None)
+        if recent_key in recent_human_verifications:
+            return "duplicate"
+        recent_human_verifications[recent_key] = now_monotonic
+
+        expires_at = (
+            datetime.now(timezone.utc)
+            + timedelta(seconds=settings.human_verify_timeout_seconds)
+        ).isoformat(timespec="seconds")
+        try:
+            await bot.restrict_chat_member(
+                chat_id=chat_id,
+                user_id=member.id,
+                permissions=muted_permissions(),
+            )
+        except TelegramAPIError:
+            logger.exception(
+                "新人验证无法限制成员，chat_id=%s user_id=%s",
+                chat_id,
+                member.id,
+            )
+            recent_human_verifications.pop(recent_key, None)
+            return "permission_error"
+
+        challenge = create_human_verify_challenge()
+        token = await db.create_human_verification(
+            chat_id,
+            member.id,
+            member.username,
+            member.first_name,
+            expires_at,
+            challenge.answer,
+        )
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text=str(option),
+                        callback_data=f"humanverify:{member.id}:{token}:{option}",
+                    )
+                    for option in challenge.options
+                ]
+            ]
+        )
+        display_name = escape(member.full_name or member.first_name or "新成员")
+        timeout_minutes = max(1, ceil(settings.human_verify_timeout_seconds / 60))
+        try:
+            await bot.send_message(
+                chat_id,
+                f'<a href="tg://user?id={member.id}">{display_name}</a> '
+                f"欢迎入群，请在 <b>{timeout_minutes}</b> 分钟内完成验证。\n\n"
+                f"请回答：<b>{escape(challenge.question)}</b> = ?\n"
+                "选择正确答案后会自动解除发言限制。",
+                reply_markup=keyboard,
+            )
+        except TelegramAPIError:
+            logger.exception(
+                "新人验证消息发送失败，chat_id=%s user_id=%s",
+                chat_id,
+                member.id,
+            )
+            await unmute_human_verified_member(bot, chat_id, member.id)
+            recent_human_verifications.pop(recent_key, None)
+            return "message_error"
+        return "started"
 
     def verification_cooldown_remaining(user_id: int) -> int:
         cooldown = settings.verify_cooldown_seconds
@@ -573,77 +652,37 @@ def build_router(settings: Settings, db: Database) -> Router:
 
         warning_sent = False
         for member in message.new_chat_members or []:
-            if member.is_bot:
-                continue
-            expires_at = (
-                datetime.now(timezone.utc)
-                + timedelta(seconds=settings.human_verify_timeout_seconds)
-            ).isoformat(timespec="seconds")
-            try:
-                await bot.restrict_chat_member(
-                    chat_id=message.chat.id,
-                    user_id=member.id,
-                    permissions=muted_permissions(),
-                )
-            except TelegramAPIError:
-                logger.exception(
-                    "新人验证无法限制成员，chat_id=%s user_id=%s",
-                    message.chat.id,
-                    member.id,
-                )
-                if not warning_sent:
-                    await message.answer(
-                        "⚠️ 新人验证需要机器人拥有“限制成员”权限，请检查群管理员权限。"
-                    )
-                    warning_sent = True
-                continue
-
-            challenge = create_human_verify_challenge()
-            token = await db.create_human_verification(
-                message.chat.id,
-                member.id,
-                member.username,
-                member.first_name,
-                expires_at,
-                challenge.answer,
-            )
-            keyboard = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        InlineKeyboardButton(
-                            text=str(option),
-                            callback_data=(
-                                f"humanverify:{member.id}:{token}:{option}"
-                            ),
-                        )
-                        for option in challenge.options
-                    ]
-                ]
-            )
-            display_name = escape(member.full_name or member.first_name or "新成员")
-            timeout_minutes = max(
-                1, ceil(settings.human_verify_timeout_seconds / 60)
-            )
-            try:
+            status = await start_human_verification(bot, message.chat.id, member)
+            if status == "permission_error" and not warning_sent:
                 await message.answer(
-                    f'<a href="tg://user?id={member.id}">{display_name}</a> '
-                    f"欢迎入群，请在 <b>{timeout_minutes}</b> 分钟内完成验证。\n\n"
-                    f"请回答：<b>{escape(challenge.question)}</b> = ?\n"
-                    "选择正确答案后会自动解除发言限制。",
-                    reply_markup=keyboard,
+                    "⚠️ 新人验证需要机器人拥有“限制成员”权限，请检查群管理员权限。"
                 )
-            except TelegramAPIError:
-                logger.exception(
-                    "新人验证消息发送失败，chat_id=%s user_id=%s",
-                    message.chat.id,
-                    member.id,
-                )
-                await unmute_human_verified_member(bot, message.chat.id, member.id)
+                warning_sent = True
 
         try:
             await message.delete()
         except TelegramAPIError:
             logger.info("无法删除新人入群系统消息，chat_id=%s", message.chat.id)
+
+    @root_router.chat_member()
+    async def human_verify_chat_member(event: ChatMemberUpdated, bot: Bot) -> None:
+        if not is_human_verify_chat(event):
+            return
+        if is_member_status(event.old_chat_member):
+            return
+        if not is_member_status(event.new_chat_member):
+            return
+
+        member = event.new_chat_member.user
+        status = await start_human_verification(bot, event.chat.id, member)
+        if status == "permission_error":
+            try:
+                await bot.send_message(
+                    event.chat.id,
+                    "⚠️ 新人验证需要机器人拥有“限制成员”权限，请检查群管理员权限。",
+                )
+            except TelegramAPIError:
+                logger.exception("新人验证权限提醒发送失败，chat_id=%s", event.chat.id)
 
     @root_router.callback_query(F.data.startswith("humanverify:"))
     async def callback_human_verify(callback: CallbackQuery, bot: Bot) -> None:
