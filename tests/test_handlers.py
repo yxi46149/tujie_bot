@@ -45,6 +45,7 @@ class HandlerSafetyTests(unittest.IsolatedAsyncioTestCase):
             invite_reward=5,
             invite_daily_reward_limit=20,
             checkin_reward=1,
+            lottery_cost=5,
             verify_cooldown_seconds=15,
             verify_max_concurrency=5,
             redemption_intent_ttl_seconds=600,

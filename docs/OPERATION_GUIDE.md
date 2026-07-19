@@ -1,0 +1,281 @@
+# 图杰机器人本地调试与运营操作文档
+
+本文按实际使用顺序整理：本地启动、`.env` 参数来源、商品卡密管理、个人抽奖、群抽奖和测试清理。
+
+## 1. 本地启动
+
+PowerShell：
+
+```powershell
+cd C:\Users\huanwen\IdeaProjects\tujie_bot
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+python -m scripts.check_config
+python -m scripts.check_bot
+python -m app.main
+```
+
+如果没有 `.venv`：
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+```
+
+启动成功后，机器人会自动创建或升级 SQLite 数据库。默认数据库是 `data/bot.db`。
+
+## 2. `.env` 参数从哪里来
+
+先复制模板：
+
+```powershell
+Copy-Item .env.example .env
+```
+
+常用配置：
+
+```dotenv
+BOT_TOKEN=从 @BotFather 获取的机器人 Token
+ADMIN_IDS=你的 Telegram 数字 ID，多个用英文逗号分隔
+REQUIRED_CHAT_IDS=@your_channel,-1001234567890
+REQUIRED_JOIN_URLS=https://t.me/your_channel,https://t.me/+privateInvite
+REQUIRED_CHAT_NAMES=通知频道,用户交流群
+INVITE_REWARD=5
+INVITE_DAILY_REWARD_LIMIT=20
+CHECKIN_REWARD=1
+LOTTERY_COST=5
+TIMEZONE=Asia/Shanghai
+DATABASE_PATH=data/bot.db
+```
+
+参数来源：
+
+| 参数 | 获取方式 |
+|---|---|
+| `BOT_TOKEN` | Telegram 里找 `@BotFather`，用 `/newbot` 创建机器人 |
+| `ADMIN_IDS` | 你自己的 Telegram 数字 ID，可用 ID 查询机器人获取 |
+| `REQUIRED_CHAT_IDS` | 公开频道/群可填 `@username`；私密频道/群通常是 `-100...` 数字 ID |
+| `REQUIRED_JOIN_URLS` | 用户点击加入用的公开链接或私密邀请链接 |
+| `REQUIRED_CHAT_NAMES` | 按钮展示名称，数量要和 `REQUIRED_CHAT_IDS` 一致 |
+| `LOTTERY_COST` | 用户个人 `/lottery` 每抽一次消耗多少积分 |
+| `DATABASE_PATH` | 本地 SQLite 文件路径，测试环境可换成单独文件 |
+
+`REQUIRED_CHAT_IDS`、`REQUIRED_JOIN_URLS`、`REQUIRED_CHAT_NAMES` 必须一一对应。例如有一个频道和一个群：
+
+```dotenv
+REQUIRED_CHAT_IDS=@my_channel,-1001234567890
+REQUIRED_JOIN_URLS=https://t.me/my_channel,https://t.me/+abcdef
+REQUIRED_CHAT_NAMES=通知频道,交流群
+```
+
+## 3. Telegram 权限准备
+
+1. 把机器人加入需要检查关注的频道/群。
+2. 在频道和群里把机器人设为管理员，否则 `getChatMember` 检查不稳定。
+3. 群抽奖如果用“发送口令参与”，需要找 `@BotFather` 执行 `/setprivacy`，选择你的机器人后设为 `Disable`。
+4. 如果希望机器人删除上一条参与反馈，建议在群里给机器人删除消息权限。
+
+注意：管理员命令只认 `.env` 的 `ADMIN_IDS`，不是谁在群里是群管理员谁就能操作。
+
+## 4. 商品和卡密
+
+目前没有独立 Web 管理后台，管理都通过机器人管理员命令完成。只有 `ADMIN_IDS` 里的用户能使用 `/admin` 和相关命令。
+
+创建商品：
+
+```text
+/addproduct 10 测试卡密
+```
+
+查看商品：
+
+```text
+/products
+```
+
+上架/下架商品：
+
+```text
+/toggleproduct 1
+```
+
+导入卡密，推荐本地导入，卡密不会经过 Telegram：
+
+```powershell
+python -m scripts.import_cards 1 .\codes.txt
+```
+
+也可以在 Telegram 管理员聊天里导入：
+
+```text
+/addcards 1
+CODE-001
+CODE-002
+CODE-003
+```
+
+机器人会尽量删除原始卡密消息。重复卡密会自动忽略。
+
+测试环境清空数据最简单的方法是停掉机器人后删除测试数据库：
+
+```powershell
+Remove-Item .\data\bot.db
+```
+
+如果是生产库，不建议直接清空。先备份 `data/bot.db`，再决定是否只下架商品或新建测试数据库。
+
+## 5. 个人积分抽奖
+
+用户私聊机器人发送：
+
+```text
+/lottery
+```
+
+每次抽奖消耗 `.env` 的 `LOTTERY_COST` 积分。
+
+管理员配置奖池：
+
+```text
+/lotteryprizes
+/addlotteryprize 60 none 谢谢参与
+/addlotteryprize 30 points 1 小额积分
+/addlotteryprize 10 product 1 测试卡密
+/togglelotteryprize 1
+```
+
+奖品类型：
+
+| 类型 | 含义 |
+|---|---|
+| `none` | 空奖，不发积分也不发卡密 |
+| `points` | 发积分 |
+| `product` | 从商品库存里发一条卡密 |
+
+商品下架或库存为 0 时，对应卡密奖不会进入个人抽奖池。
+
+## 6. 群抽奖
+
+群抽奖只能由 `ADMIN_IDS` 里的管理员在群聊里发起。
+
+### 6.1 定时开奖
+
+语法：
+
+```text
+/grouplottery points <积分> <中奖人数> time <时长> <参与口令> <标题>
+/grouplottery product <商品ID> <中奖人数> time <时长> <参与口令> <标题>
+```
+
+示例：
+
+```text
+/grouplottery points 20 3 time 10m 抽奖 群福利积分抽奖
+```
+
+`10m` 后自动开奖。时长支持：
+
+| 写法 | 含义 |
+|---|---|
+| `30s` / `30秒` | 30 秒 |
+| `10m` / `10分钟` | 10 分钟 |
+| `2h` / `2小时` | 2 小时 |
+| `1d` / `1天` | 1 天 |
+| `10` | 10 分钟 |
+
+### 6.2 满人开奖
+
+语法：
+
+```text
+/grouplottery points <积分> <中奖人数> count <参与人数> <参与口令> <标题>
+/grouplottery product <商品ID> <中奖人数> count <参与人数> <参与口令> <标题>
+```
+
+示例：
+
+```text
+/grouplottery product 1 1 count 50 抽卡 群福利卡密抽奖
+```
+
+达到 50 人参与后自动开奖。
+
+### 6.3 多行写法
+
+如果参与口令或标题比较长，推荐多行写：
+
+```text
+/grouplottery points 20 3 time 10m
+我要抽奖
+群福利积分抽奖
+```
+
+群成员发送完全一致的口令，例如 `我要抽奖`，即可参与。
+
+参与成功后机器人会：
+
+1. @ 当前参与用户；
+2. 回复当前参与人数，例如 `2/50`；
+3. 从第二条成功反馈开始，自动删除上一条反馈。
+
+如果配置了 `REQUIRED_CHAT_IDS`，参与群抽奖时也会检查用户是否已经加入全部指定频道/群。
+
+### 6.4 手动开奖
+
+管理员可以对未开奖抽奖手动开奖：
+
+```text
+/drawlottery 1
+```
+
+`1` 是发起群抽奖后机器人返回的编号。
+
+### 6.5 兑奖方式
+
+积分奖：开奖后直接给中奖用户加积分。
+
+卡密奖：开奖后机器人私聊中奖用户发送卡密，不会把卡密发到群里。用户没收到私聊时，先私聊机器人，然后发送：
+
+```text
+/mycards
+```
+
+即可找回最近兑换或中奖的卡密。
+
+## 7. 常用检查命令
+
+```powershell
+python -m scripts.check_config
+python -m scripts.check_bot
+python -m unittest discover -s tests -v
+python -m compileall app scripts tests
+```
+
+`check_config` 检查 `.env` 格式，`check_bot` 会调用 Telegram API 验证 Token 和基础连接。
+
+## 8. 常见问题
+
+### 群里发口令没反应
+
+检查三件事：
+
+1. `@BotFather` 的 privacy mode 是否已经设为 Disable；
+2. 机器人是否在这个群里；
+3. 参与口令是否和抽奖公告中的口令完全一致。
+
+### 用户参与时提示未加入频道
+
+检查用户是否加入了 `.env` 中 `REQUIRED_CHAT_IDS` 配置的全部群/频道。机器人也必须在这些群/频道里，并有管理员权限。
+
+### 卡密抽奖创建失败，提示库存不足
+
+先确认商品已创建、已上架，并且未兑换卡密数量大于等于中奖人数：
+
+```text
+/products
+```
+
+### `/admin` 谁都能用吗
+
+不能。只有 `.env` 的 `ADMIN_IDS` 包含的 Telegram 用户 ID 才能使用管理员命令。

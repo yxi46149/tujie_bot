@@ -51,6 +51,7 @@ class Settings:
     invite_reward: int
     invite_daily_reward_limit: int
     checkin_reward: int
+    lottery_cost: int
     verify_cooldown_seconds: int
     verify_max_concurrency: int
     redemption_intent_ttl_seconds: int
@@ -92,6 +93,7 @@ class Settings:
         invite_reward = int(os.getenv("INVITE_REWARD", "5"))
         invite_daily_reward_limit = int(os.getenv("INVITE_DAILY_REWARD_LIMIT", "20"))
         checkin_reward = int(os.getenv("CHECKIN_REWARD", "1"))
+        lottery_cost = int(os.getenv("LOTTERY_COST", "5"))
         verify_cooldown_seconds = int(os.getenv("VERIFY_COOLDOWN_SECONDS", "15"))
         verify_max_concurrency = int(os.getenv("VERIFY_MAX_CONCURRENCY", "5"))
         redemption_intent_ttl_seconds = int(
@@ -102,11 +104,14 @@ class Settings:
                 invite_reward,
                 invite_daily_reward_limit,
                 checkin_reward,
+                lottery_cost,
                 verify_cooldown_seconds,
             )
             < 0
         ):
             raise RuntimeError("积分、每日上限和冷却时间不能为负数。")
+        if lottery_cost <= 0:
+            raise RuntimeError("LOTTERY_COST 必须大于 0。")
         if verify_max_concurrency < 1:
             raise RuntimeError("VERIFY_MAX_CONCURRENCY 必须大于 0。")
         if redemption_intent_ttl_seconds < 60:
@@ -127,6 +132,7 @@ class Settings:
             invite_reward=invite_reward,
             invite_daily_reward_limit=invite_daily_reward_limit,
             checkin_reward=checkin_reward,
+            lottery_cost=lottery_cost,
             verify_cooldown_seconds=verify_cooldown_seconds,
             verify_max_concurrency=verify_max_concurrency,
             redemption_intent_ttl_seconds=redemption_intent_ttl_seconds,

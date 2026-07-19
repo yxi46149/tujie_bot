@@ -4,6 +4,7 @@ import asyncio
 import sqlite3
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from app.database import Database
@@ -118,8 +119,9 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         await self.db.register_user(100, "inviter", "邀请人")
         await self.db.register_user(200, None, "用户一", inviter_id=100)
         await self.db.register_user(201, None, "用户二", inviter_id=100)
-        start = "2026-07-16T16:00:00+00:00"
-        end = "2026-07-17T16:00:00+00:00"
+        now = datetime.now(timezone.utc)
+        start = (now - timedelta(hours=1)).isoformat(timespec="seconds")
+        end = (now + timedelta(hours=1)).isoformat(timespec="seconds")
 
         first = await self.db.verify_and_reward(200, 5, 1, start, end)
         second = await self.db.verify_and_reward(201, 5, 1, start, end)
@@ -151,6 +153,222 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(user["points"], 10)
         self.assertEqual(len(redemptions), 1)
         self.assertEqual(await self.db.quick_check(), "ok")
+
+    async def test_lottery_points_prize_charges_cost_and_adds_reward(self) -> None:
+        await self.db.register_user(100, None, "用户")
+        await self.db.adjust_points(100, 10)
+        prize_id = await self.db.add_lottery_prize("小额积分", "points", 1, 2)
+
+        outcome = await self.db.draw_lottery(100, 5)
+        user = await self.db.get_user(100)
+
+        self.assertIsNotNone(prize_id)
+        self.assertEqual(outcome.status, "ok")
+        self.assertEqual(outcome.prize_type, "points")
+        self.assertEqual(outcome.points_delta, 2)
+        self.assertEqual(outcome.points, 7)
+        self.assertEqual(user["points"], 7)
+
+    async def test_lottery_product_prize_consumes_card_and_records_redemption(
+        self,
+    ) -> None:
+        await self.db.register_user(100, None, "用户")
+        await self.db.adjust_points(100, 10)
+        product_id = await self.db.add_product("抽奖卡密", 99)
+        await self.db.add_cards(product_id, ["LOTTERY-CODE"])
+        prize_id = await self.db.add_lottery_prize(
+            "抽奖卡密", "product", 1, product_id=product_id
+        )
+
+        outcome = await self.db.draw_lottery(100, 5)
+        user = await self.db.get_user(100)
+        product = await self.db.get_product(product_id)
+        redemptions = await self.db.get_user_redemptions(100)
+
+        self.assertIsNotNone(prize_id)
+        self.assertEqual(outcome.status, "ok")
+        self.assertEqual(outcome.prize_type, "product")
+        self.assertEqual(outcome.code, "LOTTERY-CODE")
+        self.assertEqual(outcome.points, 5)
+        self.assertEqual(user["points"], 5)
+        self.assertEqual(product["stock"], 0)
+        self.assertEqual(len(redemptions), 1)
+        self.assertEqual(redemptions[0]["code"], "LOTTERY-CODE")
+
+    async def test_lottery_without_available_prizes_does_not_deduct_points(
+        self,
+    ) -> None:
+        await self.db.register_user(100, None, "用户")
+        await self.db.adjust_points(100, 10)
+        product_id = await self.db.add_product("空库存商品", 99)
+        await self.db.add_lottery_prize("空库存卡密", "product", 1, product_id=product_id)
+
+        outcome = await self.db.draw_lottery(100, 5)
+        user = await self.db.get_user(100)
+
+        self.assertEqual(outcome.status, "no_prizes")
+        self.assertEqual(user["points"], 10)
+
+    async def test_lottery_insufficient_points_does_not_draw(self) -> None:
+        await self.db.register_user(100, None, "用户")
+        await self.db.adjust_points(100, 4)
+        await self.db.add_lottery_prize("谢谢参与", "none", 1)
+
+        outcome = await self.db.draw_lottery(100, 5)
+        user = await self.db.get_user(100)
+
+        self.assertEqual(outcome.status, "insufficient_points")
+        self.assertEqual(outcome.points, 4)
+        self.assertEqual(user["points"], 4)
+
+    async def test_group_lottery_points_prize_awards_all_winners(self) -> None:
+        await self.db.register_user(100, None, "管理员")
+        await self.db.register_user(200, "one", "用户一")
+        await self.db.register_user(201, "two", "用户二")
+        created = await self.db.create_group_lottery(
+            -1001, 100, "群福利", "points", 3, 2
+        )
+
+        self.assertEqual(created.status, "ok")
+        self.assertIsNotNone(created.lottery_id)
+        first_join = await self.db.join_group_lottery(
+            created.lottery_id, 200, "one", "用户一"
+        )
+        duplicate_join = await self.db.join_group_lottery(
+            created.lottery_id, 200, "one", "用户一"
+        )
+        second_join = await self.db.join_group_lottery(
+            created.lottery_id, 201, "two", "用户二"
+        )
+        outcome = await self.db.draw_group_lottery(created.lottery_id)
+        user_one = await self.db.get_user(200)
+        user_two = await self.db.get_user(201)
+        join_after_draw = await self.db.join_group_lottery(
+            created.lottery_id, 100, None, "管理员"
+        )
+
+        self.assertEqual(first_join.participant_count, 1)
+        self.assertEqual(duplicate_join.participant_count, 1)
+        self.assertEqual(second_join.participant_count, 2)
+        self.assertEqual(outcome.status, "ok")
+        self.assertEqual(outcome.participant_count, 2)
+        self.assertEqual(len(outcome.winners), 2)
+        self.assertEqual(user_one["points"], 3)
+        self.assertEqual(user_two["points"], 3)
+        self.assertEqual(join_after_draw.status, "drawn")
+
+    async def test_group_lottery_product_prize_consumes_card(self) -> None:
+        await self.db.register_user(100, None, "管理员")
+        await self.db.register_user(200, "winner", "中奖用户")
+        product_id = await self.db.add_product("群抽奖卡密", 50)
+        await self.db.add_cards(product_id, ["GROUP-CODE"])
+        created = await self.db.create_group_lottery(
+            -1001, 100, "群卡密", "product", product_id, 1
+        )
+        await self.db.join_group_lottery(created.lottery_id, 200, "winner", "中奖用户")
+
+        outcome = await self.db.draw_group_lottery(created.lottery_id)
+        product = await self.db.get_product(product_id)
+        redemptions = await self.db.get_user_redemptions(200)
+
+        self.assertEqual(outcome.status, "ok")
+        self.assertEqual(outcome.prize_type, "product")
+        self.assertEqual(len(outcome.winners), 1)
+        self.assertEqual(outcome.winners[0].code, "GROUP-CODE")
+        self.assertEqual(product["stock"], 0)
+        self.assertEqual(len(redemptions), 1)
+        self.assertEqual(redemptions[0]["code"], "GROUP-CODE")
+
+    async def test_group_lottery_rejects_product_with_insufficient_stock(self) -> None:
+        await self.db.register_user(100, None, "管理员")
+        product_id = await self.db.add_product("库存不足商品", 50)
+
+        created = await self.db.create_group_lottery(
+            -1001, 100, "库存不足", "product", product_id, 1
+        )
+
+        self.assertEqual(created.status, "insufficient_stock")
+        self.assertEqual(created.stock, 0)
+
+    async def test_count_group_lottery_triggers_at_target_count(self) -> None:
+        await self.db.register_user(100, None, "管理员")
+        await self.db.register_user(200, "one", "用户一")
+        await self.db.register_user(201, "two", "用户二")
+        await self.db.register_user(202, "three", "用户三")
+        created = await self.db.create_group_lottery(
+            -1001,
+            100,
+            "满人抽奖",
+            "points",
+            5,
+            1,
+            trigger_text="抽奖",
+            draw_mode="count",
+            target_participants=2,
+        )
+
+        first_join = await self.db.join_group_lottery(
+            created.lottery_id, 200, "one", "用户一"
+        )
+        await self.db.set_group_lottery_feedback(created.lottery_id, 9001)
+        second_join = await self.db.join_group_lottery(
+            created.lottery_id, 201, "two", "用户二"
+        )
+        duplicate_join = await self.db.join_group_lottery(
+            created.lottery_id, 200, "one-new", "用户一新"
+        )
+        over_limit_join = await self.db.join_group_lottery(
+            created.lottery_id, 202, "three", "用户三"
+        )
+
+        self.assertEqual(created.status, "ok")
+        self.assertEqual(created.target_participants, 2)
+        self.assertEqual(first_join.status, "ok")
+        self.assertFalse(first_join.should_draw)
+        self.assertEqual(second_join.status, "ok")
+        self.assertTrue(second_join.should_draw)
+        self.assertEqual(second_join.participant_count, 2)
+        self.assertEqual(second_join.previous_feedback_message_id, 9001)
+        self.assertEqual(duplicate_join.status, "already_joined")
+        self.assertEqual(duplicate_join.participant_count, 2)
+        self.assertEqual(over_limit_join.status, "filled")
+        self.assertEqual(over_limit_join.participant_count, 2)
+
+    async def test_due_group_lotteries_only_returns_elapsed_timed_lotteries(
+        self,
+    ) -> None:
+        await self.db.register_user(100, None, "管理员")
+        now = datetime.now(timezone.utc)
+        past = (now - timedelta(seconds=1)).isoformat(timespec="seconds")
+        future = (now + timedelta(minutes=5)).isoformat(timespec="seconds")
+        due_created = await self.db.create_group_lottery(
+            -1001,
+            100,
+            "到期抽奖",
+            "points",
+            5,
+            1,
+            trigger_text="到期",
+            draw_mode="time",
+            draw_at=past,
+        )
+        await self.db.create_group_lottery(
+            -1001,
+            100,
+            "未到期抽奖",
+            "points",
+            5,
+            1,
+            trigger_text="未到期",
+            draw_mode="time",
+            draw_at=future,
+        )
+
+        due = await self.db.list_due_group_lotteries(
+            now.isoformat(timespec="seconds")
+        )
+
+        self.assertEqual([row["id"] for row in due], [due_created.lottery_id])
 
     async def test_initialize_upgrades_legacy_database_without_losing_users(
         self,

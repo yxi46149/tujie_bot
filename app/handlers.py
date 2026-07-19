@@ -22,7 +22,14 @@ from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 from app.config import ChatId, Settings
 from app.database import Database
-from app.keyboards import main_menu, product_menu, shop_menu
+from app.group_lottery import (
+    GROUP_LOTTERY_USAGE,
+    deliver_group_lottery_result,
+    group_lottery_announcement,
+    parse_group_lottery_command,
+    participation_message,
+)
+from app.keyboards import lottery_menu, main_menu, product_menu, shop_menu
 from app.texts import (
     help_message,
     invite_message,
@@ -116,22 +123,18 @@ async def answer_callback(
 def build_router(settings: Settings, db: Database) -> Router:
     root_router = Router(name="points_referral_bot")
 
-    @root_router.message(F.chat.type != ChatType.PRIVATE, F.text.startswith("/"))
-    async def reject_group_command(message: Message) -> None:
-        await message.reply("🔒 为保护积分和卡密，请私聊机器人使用此命令。")
-
-    @root_router.callback_query(F.message.chat.type != ChatType.PRIVATE)
-    async def reject_group_callback(callback: CallbackQuery) -> None:
-        await callback.answer(
-            "为保护个人信息和卡密，请私聊机器人操作。", show_alert=True
-        )
-
     router = Router(name="private_points_referral_bot")
     router.message.filter(F.chat.type == ChatType.PRIVATE)
     router.callback_query.filter(F.message.chat.type == ChatType.PRIVATE)
 
     verification_attempts: dict[int, float] = {}
     verification_semaphore = asyncio.Semaphore(settings.verify_max_concurrency)
+
+    def is_admin(message: Message) -> bool:
+        return bool(message.from_user and message.from_user.id in settings.admin_ids)
+
+    def is_group_chat(message: Message) -> bool:
+        return message.chat.type in {ChatType.GROUP, ChatType.SUPERGROUP}
 
     def verification_cooldown_remaining(user_id: int) -> int:
         cooldown = settings.verify_cooldown_seconds
@@ -203,6 +206,11 @@ def build_router(settings: Settings, db: Database) -> Router:
     async def render_rank() -> str:
         return rank_message(await db.get_rank())
 
+    def is_lottery_prize_drawable(prize: object) -> bool:
+        if str(prize["prize_type"]) != "product":  # type: ignore[index]
+            return True
+        return bool(prize["product_is_active"]) and int(prize["stock"] or 0) > 0  # type: ignore[index]
+
     async def run_checkin(user_id: int) -> str:
         local_date = datetime.now(settings.timezone).date().isoformat()
         outcome = await db.claim_checkin(user_id, local_date, settings.checkin_reward)
@@ -212,6 +220,79 @@ def build_router(settings: Settings, db: Database) -> Router:
                 f"💰 当前积分：<b>{outcome.points}</b>"
             )
         return f"ℹ️ 今天已经签到过了，请明天再来。\n💰 当前积分：<b>{outcome.points}</b>"
+
+    async def render_lottery(user_id: int) -> tuple[str, bool]:
+        user = await db.get_user(user_id)
+        points = int(user["points"]) if user else 0
+        prizes = [
+            prize
+            for prize in await db.list_lottery_prizes()
+            if is_lottery_prize_drawable(prize)
+        ]
+        lines = [
+            "🎲 <b>积分抽奖</b>",
+            "",
+            f"每次消耗：<b>{settings.lottery_cost}</b> 积分",
+            f"当前积分：<b>{points}</b>",
+        ]
+        if not prizes:
+            lines.extend(["", "奖池暂未配置，稍后再来。"])
+            return "\n".join(lines), False
+
+        total_weight = sum(int(prize["weight"]) for prize in prizes)
+        lines.extend(["", "<b>当前奖池：</b>"])
+        for prize in prizes:
+            prize_type = str(prize["prize_type"])
+            weight = int(prize["weight"])
+            chance = weight / total_weight * 100
+            if prize_type == "points":
+                detail = f"+{int(prize['points_delta'])} 积分"
+            elif prize_type == "product":
+                detail = f"卡密奖品，库存 {int(prize['stock'] or 0)}"
+            else:
+                detail = "谢谢参与"
+            lines.append(
+                f"• {escape(str(prize['name']))}｜{detail}｜约 {chance:.1f}%"
+            )
+        return "\n".join(lines), True
+
+    async def run_lottery_draw(user_id: int) -> tuple[str, bool]:
+        outcome = await db.draw_lottery(user_id, settings.lottery_cost)
+        if outcome.status == "no_prizes":
+            return "🎲 奖池暂未配置，或卡密奖品暂无库存。", False
+        if outcome.status == "insufficient_points":
+            return (
+                f"❌ 积分不足，本次抽奖需要 <b>{outcome.cost}</b> 积分，"
+                f"您当前有 <b>{outcome.points}</b> 积分。"
+            ), False
+        if outcome.status == "not_registered":
+            return "请先发送 /start 创建个人账户后再抽奖。", False
+        if outcome.status != "ok":
+            return "⚠️ 抽奖失败，请稍后重试。", False
+
+        if outcome.prize_type == "points":
+            return (
+                "🎉 <b>中奖啦！</b>\n\n"
+                f"奖品：{escape(outcome.prize_name)}\n"
+                f"获得：<b>{outcome.points_delta}</b> 积分\n"
+                f"本次消耗：<b>{outcome.cost}</b> 积分\n"
+                f"剩余积分：<b>{outcome.points}</b>"
+            ), False
+        if outcome.prize_type == "product":
+            return (
+                "🎉 <b>中奖啦！</b>\n\n"
+                f"奖品：{escape(outcome.prize_name)}\n"
+                f"卡密：<code>{escape(outcome.code)}</code>\n"
+                f"本次消耗：<b>{outcome.cost}</b> 积分\n"
+                f"剩余积分：<b>{outcome.points}</b>\n\n"
+                "请妥善保存；如发送中断，可使用 /mycards 找回。"
+            ), True
+        return (
+            "😔 <b>很遗憾，本次未中奖</b>\n\n"
+            f"奖品：{escape(outcome.prize_name)}\n"
+            f"本次消耗：<b>{outcome.cost}</b> 积分\n"
+            f"剩余积分：<b>{outcome.points}</b>"
+        ), False
 
     async def run_verification(user_id: int, bot: Bot) -> str:
         if not settings.required_chat_ids:
@@ -275,6 +356,243 @@ def build_router(settings: Settings, db: Database) -> Router:
             reply_markup=shop_menu(products),
         )
 
+    async def send_lottery_message(message: Message) -> None:
+        if not message.from_user:
+            return
+        text, has_prizes = await render_lottery(message.from_user.id)
+        await message.answer(
+            text,
+            reply_markup=lottery_menu(settings.lottery_cost, has_prizes),
+        )
+
+    async def send_lottery_callback(callback: CallbackQuery, bot: Bot) -> None:
+        text, has_prizes = await render_lottery(callback.from_user.id)
+        await answer_callback(
+            callback,
+            bot,
+            text,
+            reply_markup=lottery_menu(settings.lottery_cost, has_prizes),
+        )
+
+    async def handle_group_lottery_participation(
+        message: Message, bot: Bot, lottery_id: int
+    ) -> None:
+        if not message.from_user:
+            return
+        if settings.required_chat_ids:
+            result = await check_membership(
+                bot, message.from_user.id, settings.required_chat_ids
+            )
+            if result.errors:
+                await message.reply("暂时无法检查资格，请稍后再试。")
+                return
+            if result.missing:
+                await message.reply("请先加入指定群/频道，再参与抽奖。")
+                return
+
+        await ensure_message_user(message)
+        outcome = await db.join_group_lottery(
+            lottery_id,
+            message.from_user.id,
+            message.from_user.username,
+            message.from_user.first_name,
+        )
+        if outcome.status == "not_found":
+            await message.reply("抽奖不存在。")
+            return
+        if outcome.status == "already_joined":
+            return
+        if outcome.status == "filled":
+            await message.reply("这个抽奖参与人数已满，正在开奖或已结束。")
+            return
+        if outcome.status != "ok":
+            await message.reply("这个抽奖已经结束。")
+            return
+
+        feedback = await message.answer(
+            participation_message(
+                message.from_user.id,
+                message.from_user.username,
+                message.from_user.first_name,
+                outcome.participant_count,
+                outcome.target_participants,
+            )
+        )
+        await db.set_group_lottery_feedback(lottery_id, feedback.message_id)
+        if outcome.previous_feedback_message_id:
+            try:
+                await bot.delete_message(
+                    message.chat.id, outcome.previous_feedback_message_id
+                )
+            except TelegramAPIError:
+                logger.info(
+                    "无法删除上一条群抽奖参与反馈，chat_id=%s message_id=%s",
+                    message.chat.id,
+                    outcome.previous_feedback_message_id,
+                )
+        if outcome.should_draw:
+            await deliver_group_lottery_result(
+                bot, db, lottery_id, cancel_on_failure=True
+            )
+
+    @root_router.message(Command("grouplottery"))
+    async def command_group_lottery(
+        message: Message, command: CommandObject
+    ) -> None:
+        if not is_group_chat(message):
+            await message.answer("请在群聊中发起群抽奖。")
+            return
+        if not is_admin(message):
+            await message.reply("⛔ 只有机器人管理员可以发起群抽奖。")
+            return
+        if not message.from_user:
+            return
+        await ensure_message_user(message)
+
+        parsed = parse_group_lottery_command(command.args)
+        if parsed is None:
+            await message.reply(GROUP_LOTTERY_USAGE)
+            return
+        outcome = await db.create_group_lottery(
+            message.chat.id,
+            message.from_user.id,
+            parsed.title,
+            parsed.prize_type,
+            parsed.prize_value,
+            parsed.winner_count,
+            trigger_text=parsed.trigger_text,
+            draw_mode=parsed.draw_mode,
+            target_participants=parsed.target_participants,
+            draw_at=parsed.draw_at,
+        )
+        if outcome.status == "invalid":
+            await message.reply(GROUP_LOTTERY_USAGE)
+            return
+        if outcome.status == "duplicate_trigger":
+            await message.reply("❌ 当前群已有未开奖抽奖使用相同参与口令。")
+            return
+        if outcome.status == "product_not_found":
+            await message.reply("❌ 商品不存在。")
+            return
+        if outcome.status == "product_inactive":
+            await message.reply("❌ 商品已下架，不能作为群抽奖奖品。")
+            return
+        if outcome.status == "insufficient_stock":
+            await message.reply(
+                f"❌ 商品库存不足，当前库存 {outcome.stock}，"
+                f"但中奖人数是 {parsed.winner_count}。"
+            )
+            return
+        if outcome.status != "ok" or outcome.lottery_id is None:
+            await message.reply("⚠️ 群抽奖创建失败，请稍后重试。")
+            return
+
+        sent = await message.answer(
+            group_lottery_announcement(
+                outcome.lottery_id,
+                parsed,
+                outcome.product_name,
+            )
+        )
+        await db.set_group_lottery_message(outcome.lottery_id, sent.message_id)
+
+    @root_router.callback_query(F.data.startswith("grouplottery:join:"))
+    async def callback_group_lottery_join(
+        callback: CallbackQuery, bot: Bot
+    ) -> None:
+        if not callback.message or callback.message.chat.type == ChatType.PRIVATE:
+            await callback.answer("请在群抽奖消息上参与。", show_alert=True)
+            return
+        try:
+            lottery_id = int(str(callback.data).rsplit(":", maxsplit=1)[1])
+        except (ValueError, IndexError):
+            await callback.answer("抽奖参数无效。", show_alert=True)
+            return
+
+        lottery = await db.get_group_lottery(lottery_id)
+        if not lottery or int(lottery["chat_id"]) != callback.message.chat.id:
+            await callback.answer("这个抽奖不存在或不属于当前群。", show_alert=True)
+            return
+        if lottery["status"] != "pending":
+            await callback.answer("这个抽奖已经结束。", show_alert=True)
+            return
+
+        if settings.required_chat_ids:
+            result = await check_membership(
+                bot, callback.from_user.id, settings.required_chat_ids
+            )
+            if result.errors:
+                await callback.answer(
+                    "暂时无法检查资格，请稍后再试。", show_alert=True
+                )
+                return
+            if result.missing:
+                await callback.answer(
+                    "请先加入指定群/频道，再参与抽奖。", show_alert=True
+                )
+                return
+
+        await ensure_callback_user(callback)
+        outcome = await db.join_group_lottery(
+            lottery_id,
+            callback.from_user.id,
+            callback.from_user.username,
+            callback.from_user.first_name,
+        )
+        if outcome.status == "not_found":
+            await callback.answer("抽奖不存在。", show_alert=True)
+            return
+        if outcome.status == "already_joined":
+            await callback.answer("你已经参与过了。", show_alert=True)
+            return
+        if outcome.status == "filled":
+            await callback.answer("参与人数已满，正在开奖或已结束。", show_alert=True)
+            return
+        if outcome.status != "ok":
+            await callback.answer("这个抽奖已经结束。", show_alert=True)
+            return
+        await callback.answer(
+            f"参与成功，当前 {outcome.participant_count} 人参与。",
+            show_alert=True,
+        )
+        if outcome.should_draw:
+            await deliver_group_lottery_result(
+                bot, db, lottery_id, cancel_on_failure=True
+            )
+
+    @root_router.message(Command("drawlottery"))
+    async def command_draw_group_lottery(
+        message: Message, command: CommandObject, bot: Bot
+    ) -> None:
+        if not is_group_chat(message):
+            await message.answer("请在发起抽奖的群聊中开奖。")
+            return
+        if not is_admin(message):
+            await message.reply("⛔ 只有机器人管理员可以开奖。")
+            return
+        value = (command.args or "").strip()
+        if not value.isdigit():
+            await message.reply("用法：/drawlottery &lt;抽奖编号&gt;")
+            return
+        lottery_id = int(value)
+        lottery = await db.get_group_lottery(lottery_id)
+        if not lottery or int(lottery["chat_id"]) != message.chat.id:
+            await message.reply("❌ 这个抽奖不存在或不属于当前群。")
+            return
+        await deliver_group_lottery_result(bot, db, lottery_id)
+
+    @root_router.message(F.chat.type != ChatType.PRIVATE, F.text)
+    async def group_lottery_phrase(message: Message, bot: Bot) -> None:
+        text = (message.text or "").strip()
+        if not text:
+            return
+        lottery = await db.get_group_lottery_by_trigger(message.chat.id, text)
+        if lottery:
+            await handle_group_lottery_participation(message, bot, int(lottery["id"]))
+            return
+        if text.startswith("/"):
+            await message.reply("🔒 为保护积分和卡密，请私聊机器人使用此命令。")
+
     @router.message(CommandStart())
     async def command_start(message: Message, command: CommandObject) -> None:
         if not message.from_user:
@@ -329,6 +647,11 @@ def build_router(settings: Settings, db: Database) -> Router:
     async def command_shop(message: Message) -> None:
         await ensure_message_user(message)
         await send_shop_message(message)
+
+    @router.message(Command("lottery"))
+    async def command_lottery(message: Message) -> None:
+        await ensure_message_user(message)
+        await send_lottery_message(message)
 
     @router.message(Command("mycards"))
     async def command_my_cards(message: Message) -> None:
@@ -411,6 +734,12 @@ def build_router(settings: Settings, db: Database) -> Router:
         await callback.answer()
         await ensure_callback_user(callback)
         await send_shop_callback(callback, bot)
+
+    @router.callback_query(F.data == "menu:lottery")
+    async def callback_lottery(callback: CallbackQuery, bot: Bot) -> None:
+        await callback.answer()
+        await ensure_callback_user(callback)
+        await send_lottery_callback(callback, bot)
 
     @router.callback_query(F.data == "menu:mycards")
     async def callback_my_cards(callback: CallbackQuery, bot: Bot) -> None:
@@ -501,8 +830,18 @@ def build_router(settings: Settings, db: Database) -> Router:
             text = "⚠️ 兑换失败，请稍后重试。"
         await answer_callback(callback, bot, text)
 
-    def is_admin(message: Message) -> bool:
-        return bool(message.from_user and message.from_user.id in settings.admin_ids)
+    @router.callback_query(F.data == "lottery:draw")
+    async def callback_lottery_draw(callback: CallbackQuery, bot: Bot) -> None:
+        await callback.answer("正在抽奖…")
+        await ensure_callback_user(callback)
+        text, protect_content = await run_lottery_draw(callback.from_user.id)
+        try:
+            await answer_callback(callback, bot, text, protect_content=protect_content)
+        except TelegramAPIError:
+            logger.exception(
+                "抽奖卡密消息发送失败，用户可通过 /mycards 找回，user_id=%s",
+                callback.from_user.id,
+            )
 
     @router.message(Command("admin"))
     async def command_admin(message: Message) -> None:
@@ -516,6 +855,11 @@ def build_router(settings: Settings, db: Database) -> Router:
             "/addproduct &lt;积分&gt; &lt;名称&gt; — 新增商品\n"
             "/addcards &lt;商品ID&gt; 后换行粘贴卡密 — 导入卡密\n"
             "/toggleproduct &lt;商品ID&gt; — 上架/下架\n"
+            "/lotteryprizes — 抽奖奖池\n"
+            "/addlotteryprize &lt;权重&gt; &lt;类型&gt; ... — 新增抽奖奖品\n"
+            "/togglelotteryprize &lt;奖品ID&gt; — 开关抽奖奖品\n"
+            "/grouplottery &lt;类型&gt; ... — 在群里发起抽奖\n"
+            "/drawlottery &lt;抽奖编号&gt; — 在群里开奖\n"
             "/addpoints &lt;用户ID&gt; &lt;数量&gt; — 调整积分"
         )
 
@@ -531,7 +875,11 @@ def build_router(settings: Settings, db: Database) -> Router:
             f"已验证用户：{stats['verified_users']}\n"
             f"已结算邀请：{stats['verified_referrals']}\n"
             f"可用卡密：{stats['available_cards']}\n"
-            f"兑换次数：{stats['redemptions']}"
+            f"兑换次数：{stats['redemptions']}\n"
+            f"启用抽奖奖品：{stats['active_lottery_prizes']}\n"
+            f"抽奖次数：{stats['lottery_draws']}\n"
+            f"群抽奖：{stats['group_lotteries']}\n"
+            f"已开奖群抽奖：{stats['drawn_group_lotteries']}"
         )
 
     @router.message(Command("products"))
@@ -625,6 +973,110 @@ def build_router(settings: Settings, db: Database) -> Router:
         else:
             await message.answer("✅ 商品已" + ("上架。" if active else "下架。"))
 
+    @router.message(Command("lotteryprizes"))
+    async def command_lottery_prizes(message: Message) -> None:
+        if not is_admin(message):
+            await message.answer("⛔ 无管理员权限。")
+            return
+        prizes = await db.list_lottery_prizes(active_only=False)
+        if not prizes:
+            await message.answer("暂无抽奖奖品。")
+            return
+        lines = ["🎲 <b>抽奖奖池</b>", ""]
+        for prize in prizes:
+            state = "启用" if prize["is_active"] else "关闭"
+            prize_type = str(prize["prize_type"])
+            if prize_type == "points":
+                detail = f"积分 +{int(prize['points_delta'])}"
+            elif prize_type == "product":
+                product_state = "商品上架" if prize["product_is_active"] else "商品下架"
+                detail = (
+                    f"商品 #{prize['product_id']} "
+                    f"{escape(str(prize['product_name'] or '未知商品'))}｜"
+                    f"库存 {int(prize['stock'] or 0)}｜{product_state}"
+                )
+            else:
+                detail = "谢谢参与"
+            lines.append(
+                f"#{prize['id']} {escape(str(prize['name']))}｜"
+                f"权重 {prize['weight']}｜{detail}｜{state}"
+            )
+        await message.answer("\n".join(lines))
+
+    @router.message(Command("addlotteryprize"))
+    async def command_add_lottery_prize(
+        message: Message, command: CommandObject
+    ) -> None:
+        if not is_admin(message):
+            await message.answer("⛔ 无管理员权限。")
+            return
+        usage = (
+            "用法：\n"
+            "/addlotteryprize &lt;权重&gt; none &lt;奖品名&gt;\n"
+            "/addlotteryprize &lt;权重&gt; points &lt;积分&gt; &lt;奖品名&gt;\n"
+            "/addlotteryprize &lt;权重&gt; product &lt;商品ID&gt; &lt;奖品名&gt;"
+        )
+        parts = (command.args or "").strip().split(maxsplit=3)
+        if len(parts) < 3:
+            await message.answer(usage)
+            return
+        try:
+            weight = int(parts[0])
+        except ValueError:
+            await message.answer("权重必须是正整数。")
+            return
+        if weight <= 0:
+            await message.answer("权重必须是正整数。")
+            return
+
+        prize_type = parts[1].lower()
+        if prize_type == "none":
+            name = " ".join(parts[2:]).strip()
+            prize_id = await db.add_lottery_prize(name, "none", weight)
+        elif prize_type == "points" and len(parts) == 4:
+            try:
+                points_delta = int(parts[2])
+            except ValueError:
+                await message.answer("积分奖品的积分数量必须是正整数。")
+                return
+            prize_id = await db.add_lottery_prize(
+                parts[3], "points", weight, points_delta=points_delta
+            )
+        elif prize_type == "product" and len(parts) == 4:
+            try:
+                product_id = int(parts[2])
+            except ValueError:
+                await message.answer("商品 ID 必须是数字。")
+                return
+            prize_id = await db.add_lottery_prize(
+                parts[3], "product", weight, product_id=product_id
+            )
+        else:
+            await message.answer(usage)
+            return
+
+        if prize_id is None:
+            await message.answer("❌ 奖品创建失败，请检查名称、积分数量或商品 ID。")
+        else:
+            await message.answer(f"✅ 抽奖奖品已创建，奖品 ID：<code>{prize_id}</code>")
+
+    @router.message(Command("togglelotteryprize"))
+    async def command_toggle_lottery_prize(
+        message: Message, command: CommandObject
+    ) -> None:
+        if not is_admin(message):
+            await message.answer("⛔ 无管理员权限。")
+            return
+        value = (command.args or "").strip()
+        if not value.isdigit():
+            await message.answer("用法：/togglelotteryprize &lt;奖品ID&gt;")
+            return
+        active = await db.toggle_lottery_prize(int(value))
+        if active is None:
+            await message.answer("❌ 抽奖奖品不存在。")
+        else:
+            await message.answer("✅ 抽奖奖品已" + ("启用。" if active else "关闭。"))
+
     @router.message(Command("addpoints"))
     async def command_add_points(message: Message, command: CommandObject) -> None:
         if not is_admin(message):
@@ -656,6 +1108,12 @@ def build_router(settings: Settings, db: Database) -> Router:
     @router.callback_query()
     async def unknown_callback(callback: CallbackQuery) -> None:
         await callback.answer("按钮已失效，请发送 /start 刷新菜单。", show_alert=True)
+
+    @root_router.callback_query(F.message.chat.type != ChatType.PRIVATE)
+    async def reject_group_callback(callback: CallbackQuery) -> None:
+        await callback.answer(
+            "为保护个人信息和卡密，请私聊机器人操作。", show_alert=True
+        )
 
     root_router.include_router(router)
     return root_router

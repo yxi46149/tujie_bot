@@ -33,6 +33,9 @@ def main_menu(join_buttons: Sequence[tuple[str, str]]) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="🎟 我的卡密", callback_data="menu:mycards"),
             ],
             [
+                InlineKeyboardButton(text="🎲 积分抽奖", callback_data="menu:lottery"),
+            ],
+            [
                 InlineKeyboardButton(text="🏆 邀请排行榜", callback_data="menu:rank"),
                 InlineKeyboardButton(text="📖 使用说明", callback_data="menu:help"),
             ],
@@ -70,4 +73,19 @@ def product_menu(intent_token: str, has_stock: bool) -> InlineKeyboardMarkup:
             ]
         )
     rows.append([InlineKeyboardButton(text="⬅️ 返回商城", callback_data="menu:shop")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def lottery_menu(cost: int, has_prizes: bool) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if has_prizes:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"🎲 消耗 {cost} 积分抽一次",
+                    callback_data="lottery:draw",
+                )
+            ]
+        )
+    rows.append([InlineKeyboardButton(text="💰 查看积分", callback_data="menu:points")])
     return InlineKeyboardMarkup(inline_keyboard=rows)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import suppress
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -10,6 +11,7 @@ from aiogram.types import BotCommand
 
 from app.config import Settings
 from app.database import Database
+from app.group_lottery import run_group_lottery_scheduler
 from app.handlers import build_router
 
 
@@ -22,9 +24,12 @@ async def set_commands(bot: Bot) -> None:
         BotCommand(command="myinvites", description="查看我的邀请"),
         BotCommand(command="checkin", description="每日签到"),
         BotCommand(command="shop", description="兑换卡密"),
+        BotCommand(command="lottery", description="积分抽奖"),
         BotCommand(command="mycards", description="查看我的卡密"),
         BotCommand(command="rank", description="邀请排行榜"),
         BotCommand(command="help", description="使用说明"),
+        BotCommand(command="grouplottery", description="管理员发起群抽奖"),
+        BotCommand(command="drawlottery", description="管理员群抽奖开奖"),
     ]
     await bot.set_my_commands(commands)
 
@@ -44,6 +49,9 @@ async def main() -> None:
     )
     dispatcher = Dispatcher()
     dispatcher.include_router(build_router(settings, database))
+    group_lottery_task = asyncio.create_task(
+        run_group_lottery_scheduler(bot, database)
+    )
 
     try:
         await set_commands(bot)
@@ -55,6 +63,9 @@ async def main() -> None:
             allowed_updates=dispatcher.resolve_used_update_types(),
         )
     finally:
+        group_lottery_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await group_lottery_task
         await bot.session.close()
 
 
