@@ -850,6 +850,16 @@ def build_router(settings: Settings, db: Database) -> Router:
         rows = await db.list_pending_group_lotteries(message.chat.id)
         await message.reply(group_lotteries_message(rows))
 
+    @root_router.message(Command("pointrank"))
+    async def command_points_rank(message: Message) -> None:
+        if message.chat.type not in {
+            ChatType.PRIVATE,
+            ChatType.GROUP,
+            ChatType.SUPERGROUP,
+        }:
+            return
+        await message.answer(await render_points_rank())
+
     @root_router.message(F.chat.type != ChatType.PRIVATE, F.text)
     async def group_lottery_phrase(message: Message, bot: Bot) -> None:
         text = (message.text or "").strip()
@@ -935,11 +945,6 @@ def build_router(settings: Settings, db: Database) -> Router:
     async def command_rank(message: Message) -> None:
         await ensure_message_user(message)
         await message.answer(await render_rank())
-
-    @router.message(Command("pointrank"))
-    async def command_points_rank(message: Message) -> None:
-        await ensure_message_user(message)
-        await message.answer(await render_points_rank())
 
     @router.message(Command("help"))
     async def command_help(message: Message) -> None:
