@@ -270,7 +270,35 @@ Remove-Item .\data\bot.db
 
 即可找回最近兑换或中奖的卡密。
 
-## 8. 常用检查命令
+## 8. 服务器一键升级
+
+先在本机打包并把 ZIP 上传到服务器，例如 `/home/ubuntu/bot/tujie_bot-v0.1.1.zip`。然后在服务器执行：
+
+```bash
+cd /home/ubuntu/bot/tujie_bot
+bash scripts/upgrade_server.sh /home/ubuntu/bot/tujie_bot-v0.1.1.zip
+```
+
+如果 ZIP 就放在项目上级目录，并且文件名是 `tujie_bot-v*.zip`，也可以让脚本自动找最新包：
+
+```bash
+cd /home/ubuntu/bot/tujie_bot
+bash scripts/upgrade_server.sh
+```
+
+脚本会自动完成：停止 `tujie-bot` 服务、备份 `data/bot.db*`、解压新包、覆盖程序文件、保留 `.env`/`.venv`/`data`、安装依赖、执行 `check_config` 和 `check_bot`、重新启动服务并显示状态。
+
+常用参数：
+
+```bash
+bash scripts/upgrade_server.sh --skip-check-bot /home/ubuntu/bot/tujie_bot-v0.1.1.zip
+bash scripts/upgrade_server.sh --run-tests /home/ubuntu/bot/tujie_bot-v0.1.1.zip
+bash scripts/upgrade_server.sh --project-dir /opt/tujie_bot --service tujie-bot /tmp/tujie_bot-v0.1.1.zip
+```
+
+如果 systemd 里的 `WorkingDirectory` 和当前项目目录不一致，脚本会拒绝升级并提示修正，避免升级错目录。
+
+## 9. 常用检查命令
 
 ```powershell
 python -m scripts.check_config
@@ -281,7 +309,7 @@ python -m compileall app scripts tests
 
 `check_config` 检查 `.env` 格式，`check_bot` 会调用 Telegram API 验证 Token 和基础连接。
 
-## 9. 常见问题
+## 10. 常见问题
 
 ### 群里发口令没反应
 

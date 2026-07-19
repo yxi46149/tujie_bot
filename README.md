@@ -215,6 +215,13 @@ python -m scripts.check_bot
 .\scripts\package.ps1 -Version 0.1.0
 ```
 
+Linux systemd 服务器升级可以直接上传 ZIP 后执行：
+
+```bash
+cd /home/ubuntu/bot/tujie_bot
+bash scripts/upgrade_server.sh /home/ubuntu/bot/tujie_bot-v0.1.0.zip
+```
+
 Docker 启动：
 
 ```powershell

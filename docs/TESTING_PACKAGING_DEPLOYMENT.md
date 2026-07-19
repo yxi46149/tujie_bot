@@ -245,7 +245,31 @@ docker compose up -d
 
 最稳妥的备份方式是先停止机器人，再复制 `data/bot.db`。停止后 WAL 会正常合并，避免漏掉 `bot.db-wal` 中尚未合并的数据。
 
-升级步骤：
+Linux systemd 部署推荐使用一键升级脚本。先把新 ZIP 上传到服务器，例如 `/home/ubuntu/bot/tujie_bot-v0.1.1.zip`，然后：
+
+```bash
+cd /home/ubuntu/bot/tujie_bot
+bash scripts/upgrade_server.sh /home/ubuntu/bot/tujie_bot-v0.1.1.zip
+```
+
+如果 ZIP 放在项目上级目录，且文件名为 `tujie_bot-v*.zip`，可以省略 ZIP 路径，脚本会自动选择最新包：
+
+```bash
+cd /home/ubuntu/bot/tujie_bot
+bash scripts/upgrade_server.sh
+```
+
+脚本默认会停止 `tujie-bot` 服务、备份 `data/bot.db*` 到 `../backups`、同步新程序、保留 `.env`/`.venv`/`data`、安装依赖、执行 `check_config` 和 `check_bot`，最后启动服务并显示状态。常用参数：
+
+```bash
+bash scripts/upgrade_server.sh --skip-check-bot /home/ubuntu/bot/tujie_bot-v0.1.1.zip
+bash scripts/upgrade_server.sh --run-tests /home/ubuntu/bot/tujie_bot-v0.1.1.zip
+bash scripts/upgrade_server.sh --project-dir /opt/tujie_bot --service tujie-bot /tmp/tujie_bot-v0.1.1.zip
+```
+
+脚本会检查 systemd 的 `WorkingDirectory` 是否和项目目录一致；如果不一致，会拒绝继续，防止升级错目录。
+
+手工升级步骤：
 
 1. 停止机器人，确认没有其他实例。
 2. 复制 `data/bot.db` 到带日期的安全备份目录，并限制访问权限。
