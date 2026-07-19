@@ -245,30 +245,33 @@ docker compose up -d
 
 最稳妥的备份方式是先停止机器人，再复制 `data/bot.db`。停止后 WAL 会正常合并，避免漏掉 `bot.db-wal` 中尚未合并的数据。
 
-Linux systemd 部署推荐使用一键升级脚本。先把新 ZIP 上传到服务器，例如 `/home/ubuntu/bot/tujie_bot-v0.1.1.zip`，然后：
+Linux systemd 部署推荐使用一键升级脚本。先把新 ZIP 上传到服务器，例如 `/home/ubuntu/bot/tujie_bot-v0.1.1.zip`。
+
+首次把升级脚本固定到项目上级目录，避免每次解压项目时覆盖脚本权限：
 
 ```bash
-cd /home/ubuntu/bot/tujie_bot
-bash scripts/upgrade_server.sh /home/ubuntu/bot/tujie_bot-v0.1.1.zip
+cd /home/ubuntu/bot
+unzip -p tujie_bot-v0.1.1.zip tujie_bot/scripts/upgrade_server.sh > ./upgrade_server.sh
+chmod +x ./upgrade_server.sh
 ```
 
-如果 ZIP 放在项目上级目录，且文件名为 `tujie_bot-v*.zip`，可以省略 ZIP 路径，脚本会自动选择最新包：
+以后升级时在 `/home/ubuntu/bot` 执行即可。脚本会自动识别项目目录 `/home/ubuntu/bot/tujie_bot`。如果 ZIP 放在 `/home/ubuntu/bot` 且文件名为 `tujie_bot-v*.zip`，可以省略 ZIP 路径，脚本会自动选择最新包：
 
 ```bash
-cd /home/ubuntu/bot/tujie_bot
-bash scripts/upgrade_server.sh
+cd /home/ubuntu/bot
+bash upgrade_server.sh
 ```
 
-脚本默认会停止 `tujie-bot` 服务、按 `.env` 的 `DATABASE_PATH` 备份真实 SQLite 文件到 `../backups`、同步新程序、保留 `.env`/`.venv`/`data`/`logs`/`backups`、安装依赖、执行 `check_config` 和 `check_bot`，最后启动服务并显示状态。
+脚本默认会停止 `tujie-bot` 服务、按 `.env` 的 `DATABASE_PATH` 备份真实 SQLite 文件到 `../backups`、同步新程序、保留 `.env`/`.venv`/`data`/`logs`/`backups`、安装依赖、执行 `check_config` 和 `check_bot`，最后启动服务并显示状态。每次升级成功后，项目里的新版 `scripts/upgrade_server.sh` 会自动复制回 `/home/ubuntu/bot/upgrade_server.sh` 并设置可执行权限。
 
 同步前会先执行 dry-run 删除清单检查。只有 `app`、`deploy`、`docs`、`scripts`、`tests` 等程序目录里的旧文件允许自动删除；如果发现项目根目录里的生产卡密、临时资料或其他非程序文件将被删除，脚本会中止。确认这些文件可以删除时，再显式追加 `--allow-delete-extra`。
 
 常用参数：
 
 ```bash
-bash scripts/upgrade_server.sh --skip-check-bot /home/ubuntu/bot/tujie_bot-v0.1.1.zip
-bash scripts/upgrade_server.sh --run-tests /home/ubuntu/bot/tujie_bot-v0.1.1.zip
-bash scripts/upgrade_server.sh --project-dir /opt/tujie_bot --service tujie-bot /tmp/tujie_bot-v0.1.1.zip
+bash upgrade_server.sh --skip-check-bot /home/ubuntu/bot/tujie_bot-v0.1.1.zip
+bash upgrade_server.sh --run-tests /home/ubuntu/bot/tujie_bot-v0.1.1.zip
+bash upgrade_server.sh --project-dir /opt/tujie_bot --service tujie-bot /tmp/tujie_bot-v0.1.1.zip
 ```
 
 脚本会检查 systemd 的 `WorkingDirectory` 是否和项目目录一致；如果不一致，会拒绝继续，防止升级错目录。

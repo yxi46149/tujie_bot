@@ -215,26 +215,35 @@ python -m scripts.check_bot
 .\scripts\package.ps1 -Version 0.1.0
 ```
 
-Linux systemd 服务器升级时，在服务器的项目根目录执行一键升级脚本。项目根目录是包含 `app/`、`scripts/`、`.env`、`.venv` 的目录，例如 `/home/ubuntu/bot/tujie_bot`：
+Linux systemd 服务器升级推荐把升级脚本固定放在项目上级目录，避免每次解压项目时覆盖脚本权限。首次安装外置升级脚本：
 
 ```bash
-cd /home/ubuntu/bot/tujie_bot
-bash scripts/upgrade_server.sh /home/ubuntu/bot/tujie_bot-v0.1.0.zip
+cd /home/ubuntu/bot
+unzip -p tujie_bot-v0.1.2.zip tujie_bot/scripts/upgrade_server.sh > ./upgrade_server.sh
+chmod +x ./upgrade_server.sh
 ```
 
-如果发布包放在项目上一级目录，并且文件名是 `tujie_bot-v*.zip`，可以省略 ZIP 路径，脚本会自动选择时间最新的包：
+以后上传新 ZIP 到 `/home/ubuntu/bot` 后，在 `/home/ubuntu/bot` 执行即可。脚本会自动识别项目目录 `/home/ubuntu/bot/tujie_bot`，并选择时间最新的 `tujie_bot-v*.zip`：
 
 ```bash
-cd /home/ubuntu/bot/tujie_bot
-bash scripts/upgrade_server.sh
+cd /home/ubuntu/bot
+bash upgrade_server.sh
 ```
 
 推荐服务器目录结构：
 
 ```text
+/home/ubuntu/bot/upgrade_server.sh
 /home/ubuntu/bot/tujie_bot
 /home/ubuntu/bot/tujie_bot-v0.1.1.zip
 /home/ubuntu/bot/tujie_bot-v0.1.2.zip
+```
+
+每次升级成功后，项目里的新版 `scripts/upgrade_server.sh` 会自动复制回 `/home/ubuntu/bot/upgrade_server.sh` 并设置可执行权限。需要指定发布包时也可以执行：
+
+```bash
+cd /home/ubuntu/bot
+bash upgrade_server.sh /home/ubuntu/bot/tujie_bot-v0.1.2.zip
 ```
 
 Docker 启动：

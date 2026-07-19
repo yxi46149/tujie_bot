@@ -272,30 +272,35 @@ Remove-Item .\data\bot.db
 
 ## 8. 服务器一键升级
 
-先在本机打包并把 ZIP 上传到服务器，例如 `/home/ubuntu/bot/tujie_bot-v0.1.1.zip`。然后在服务器执行：
+先在本机打包并把 ZIP 上传到服务器，例如 `/home/ubuntu/bot/tujie_bot-v0.1.1.zip`。
+
+首次把升级脚本固定到项目上级目录，避免每次解压项目时覆盖脚本权限：
 
 ```bash
-cd /home/ubuntu/bot/tujie_bot
-bash scripts/upgrade_server.sh /home/ubuntu/bot/tujie_bot-v0.1.1.zip
+cd /home/ubuntu/bot
+unzip -p tujie_bot-v0.1.1.zip tujie_bot/scripts/upgrade_server.sh > ./upgrade_server.sh
+chmod +x ./upgrade_server.sh
 ```
 
-如果 ZIP 就放在项目上级目录，并且文件名是 `tujie_bot-v*.zip`，也可以让脚本自动找最新包：
+以后升级时在 `/home/ubuntu/bot` 执行即可。脚本会自动识别项目目录 `/home/ubuntu/bot/tujie_bot`，并选择时间最新的 `tujie_bot-v*.zip`：
 
 ```bash
-cd /home/ubuntu/bot/tujie_bot
-bash scripts/upgrade_server.sh
+cd /home/ubuntu/bot
+bash upgrade_server.sh
 ```
 
 脚本会自动完成：停止 `tujie-bot` 服务、按 `.env` 的 `DATABASE_PATH` 备份真实 SQLite 文件、解压新包、覆盖程序文件、保留 `.env`/`.venv`/`data`/`logs`/`backups`、安装依赖、执行 `check_config` 和 `check_bot`、重新启动服务并显示状态。
 
 为避免覆盖或误删生产数据，脚本会在正式同步前先预检查删除清单。只有 `app`、`deploy`、`docs`、`scripts`、`tests` 等程序目录中的旧文件允许自动删除；如果项目根目录里有生产卡密、临时资料或其他手工文件，脚本会中止并提示你先移动或备份。
 
+每次升级成功后，项目里的新版 `scripts/upgrade_server.sh` 会自动复制回 `/home/ubuntu/bot/upgrade_server.sh` 并设置可执行权限。
+
 常用参数：
 
 ```bash
-bash scripts/upgrade_server.sh --skip-check-bot /home/ubuntu/bot/tujie_bot-v0.1.1.zip
-bash scripts/upgrade_server.sh --run-tests /home/ubuntu/bot/tujie_bot-v0.1.1.zip
-bash scripts/upgrade_server.sh --project-dir /opt/tujie_bot --service tujie-bot /tmp/tujie_bot-v0.1.1.zip
+bash upgrade_server.sh --skip-check-bot /home/ubuntu/bot/tujie_bot-v0.1.1.zip
+bash upgrade_server.sh --run-tests /home/ubuntu/bot/tujie_bot-v0.1.1.zip
+bash upgrade_server.sh --project-dir /opt/tujie_bot --service tujie-bot /tmp/tujie_bot-v0.1.1.zip
 ```
 
 如果 systemd 里的 `WorkingDirectory` 和当前项目目录不一致，脚本会拒绝升级并提示修正，避免升级错目录。

@@ -15,10 +15,16 @@ if [[ -n "${TUJIE_UPGRADE_TMP_SELF:-}" ]]; then
     trap 'rm -f "$TUJIE_UPGRADE_TMP_SELF"' EXIT
 fi
 
-PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
+if [[ -n "${PROJECT_DIR:-}" ]]; then
+    PROJECT_DIR_EXPLICIT=1
+else
+    PROJECT_DIR_EXPLICIT=0
+    PROJECT_DIR="$(pwd)"
+fi
 SERVICE_NAME="${SERVICE_NAME:-tujie-bot}"
 BACKUP_DIR="${BACKUP_DIR:-}"
 TMP_DIR="${TMP_DIR:-}"
+UPGRADE_SCRIPT_PATH="${UPGRADE_SCRIPT_PATH:-}"
 ZIP_PATH=""
 SKIP_CHECK_BOT=0
 RUN_TESTS=0
@@ -31,15 +37,20 @@ DATABASE_FILE=""
 usage() {
     cat <<'EOF'
 用法：
+  cd /home/ubuntu/bot
+  bash upgrade_server.sh [release.zip]
+
   bash scripts/upgrade_server.sh [release.zip]
   bash scripts/upgrade_server.sh --zip /home/ubuntu/bot/tujie_bot-v0.1.2.zip
 
 参数：
   -z, --zip PATH          发布 ZIP。未填写时自动查找最新的 tujie_bot-v*.zip。
-  -d, --project-dir DIR   项目目录。默认：当前目录。
+  -d, --project-dir DIR   项目目录。默认：当前目录；若当前目录下有 tujie_bot/，则自动使用它。
   -s, --service NAME      systemd 服务名。默认：tujie-bot。
       --backup-dir DIR    数据库备份目录。默认：../backups。
       --tmp-dir DIR       临时解压目录。默认：../release_tmp。
+      --upgrade-script PATH
+                            外置升级脚本保存位置。默认：项目上级目录/upgrade_server.sh。
       --skip-check-bot    跳过 Telegram 联通性检查。
       --run-tests         启动服务前运行单元测试。
       --no-start          升级完成后不启动 systemd 服务。
@@ -48,6 +59,10 @@ usage() {
   -h, --help              显示帮助。
 
 示例：
+  cd /home/ubuntu/bot
+  bash upgrade_server.sh
+  bash upgrade_server.sh tujie_bot-v0.1.2.zip
+
   cd /home/ubuntu/bot/tujie_bot
   bash scripts/upgrade_server.sh /home/ubuntu/bot/tujie_bot-v0.1.2.zip
 
@@ -122,6 +137,24 @@ prepare_tmp_dir() {
     touch "$TMP_DIR/.tujie-upgrade-tmp"
 }
 
+install_external_upgrade_script() {
+    local source_path="$PROJECT_DIR/scripts/upgrade_server.sh"
+    if [[ ! -f "$source_path" ]]; then
+        log "未找到新版升级脚本，跳过外置脚本更新：$source_path"
+        return 0
+    fi
+    if [[ "$UPGRADE_SCRIPT_PATH/" == "$PROJECT_DIR/"* ]]; then
+        log "外置脚本路径位于项目目录内，跳过自动更新：$UPGRADE_SCRIPT_PATH"
+        return 0
+    fi
+    if cp "$source_path" "$UPGRADE_SCRIPT_PATH" 2>/dev/null; then
+        chmod +x "$UPGRADE_SCRIPT_PATH" 2>/dev/null || true
+        log "已更新外置升级脚本：$UPGRADE_SCRIPT_PATH"
+    else
+        log "未能更新外置升级脚本，请手动执行：cp \"$source_path\" \"$UPGRADE_SCRIPT_PATH\""
+    fi
+}
+
 is_expected_delete() {
     local path="${1#./}"
     case "$path" in
@@ -172,6 +205,7 @@ while [[ $# -gt 0 ]]; do
         -d|--project-dir)
             [[ $# -ge 2 ]] || die "$1 需要填写参数值。"
             PROJECT_DIR="$2"
+            PROJECT_DIR_EXPLICIT=1
             shift 2
             ;;
         -s|--service)
@@ -187,6 +221,11 @@ while [[ $# -gt 0 ]]; do
         --tmp-dir)
             [[ $# -ge 2 ]] || die "$1 需要填写参数值。"
             TMP_DIR="$2"
+            shift 2
+            ;;
+        --upgrade-script)
+            [[ $# -ge 2 ]] || die "$1 需要填写参数值。"
+            UPGRADE_SCRIPT_PATH="$2"
             shift 2
             ;;
         --skip-check-bot)
@@ -233,6 +272,14 @@ if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
 fi
 
 PROJECT_DIR="$(realpath -m "$PROJECT_DIR")"
+if [[ "$PROJECT_DIR_EXPLICIT" == "0" ]]; then
+    if [[ ! -f "$PROJECT_DIR/requirements.txt" && -d "$PROJECT_DIR/tujie_bot" ]]; then
+        PROJECT_CANDIDATE="$(realpath -m "$PROJECT_DIR/tujie_bot")"
+        if [[ -f "$PROJECT_CANDIDATE/requirements.txt" && -d "$PROJECT_CANDIDATE/app" ]]; then
+            PROJECT_DIR="$PROJECT_CANDIDATE"
+        fi
+    fi
+fi
 [[ -d "$PROJECT_DIR" ]] || die "项目目录不存在：$PROJECT_DIR"
 [[ -f "$PROJECT_DIR/requirements.txt" && -d "$PROJECT_DIR/app" ]] || die "这不是 tujie_bot 项目目录：$PROJECT_DIR"
 [[ -f "$PROJECT_DIR/.env" ]] || die "项目目录缺少 .env：$PROJECT_DIR/.env"
@@ -240,8 +287,10 @@ PROJECT_DIR="$(realpath -m "$PROJECT_DIR")"
 PROJECT_PARENT="$(dirname "$PROJECT_DIR")"
 BACKUP_DIR="${BACKUP_DIR:-$PROJECT_PARENT/backups}"
 TMP_DIR="${TMP_DIR:-$PROJECT_PARENT/release_tmp}"
+UPGRADE_SCRIPT_PATH="${UPGRADE_SCRIPT_PATH:-$PROJECT_PARENT/upgrade_server.sh}"
 BACKUP_DIR="$(realpath -m "$BACKUP_DIR")"
 TMP_DIR="$(realpath -m "$TMP_DIR")"
+UPGRADE_SCRIPT_PATH="$(realpath -m "$UPGRADE_SCRIPT_PATH")"
 DATABASE_FILE="$(resolve_database_file)"
 
 [[ -n "$TMP_DIR" && "$TMP_DIR" != "/" ]] || die "临时目录不安全：$TMP_DIR"
@@ -304,6 +353,7 @@ log "项目目录：$PROJECT_DIR"
 log "发布包：$ZIP_PATH"
 log "服务名：$SERVICE_NAME"
 log "数据库文件：$DATABASE_FILE"
+log "外置升级脚本：$UPGRADE_SCRIPT_PATH"
 
 if [[ "$SERVICE_EXISTS" == "1" ]]; then
     if systemctl is-active --quiet "$SERVICE_NAME"; then
@@ -363,6 +413,7 @@ rm -f "$DRY_RUN_FILE"
 
 log "正在同步程序文件..."
 rsync -a --delete "${RSYNC_EXCLUDES[@]}" "$RELEASE_ROOT"/ "$PROJECT_DIR"/
+install_external_upgrade_script
 
 cd "$PROJECT_DIR"
 PYTHON_BIN="$PROJECT_DIR/.venv/bin/python"
