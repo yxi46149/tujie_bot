@@ -89,13 +89,15 @@ python -m app.main
 | `/verify` | 检查指定群/频道成员身份 |
 | `/invite` | 生成 `?start=ref_用户ID` 专属链接 |
 | `/myinvites` | 邀请记录与结算状态 |
-| `/checkin` | 每日签到，私聊和群聊均可调用；群聊不展示当前积分 |
+| `/checkin` | 每日签到，私聊和群聊均可调用，并显示当前积分 |
 | `/shop` | 积分商城 |
 | `/lottery` | 积分抽奖 |
 | `/mycards` | 找回最近兑换的卡密 |
 | `/pointrank` | 积分排行榜，私聊和群聊均可调用，用户名脱敏显示 |
 | `/rank` | 已验证邀请排行榜 |
 | `/help` | 使用说明 |
+
+普通群成员的快捷指令菜单只显示 `/checkin` 和 `/pointrank`；群管理员会额外看到 `/grouplottery`、`/lotteries` 和 `/drawlottery`。实际执行仍以 `.env` 的 `ADMIN_IDS` 为准。
 
 邀请必须满足以下条件才会奖励：
 

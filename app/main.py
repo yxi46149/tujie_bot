@@ -7,7 +7,13 @@ from contextlib import suppress
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.types import BotCommand
+from aiogram.types import (
+    BotCommand,
+    BotCommandScopeAllChatAdministrators,
+    BotCommandScopeAllGroupChats,
+    BotCommandScopeAllPrivateChats,
+    BotCommandScopeDefault,
+)
 
 from app.config import Settings
 from app.database import Database
@@ -15,8 +21,8 @@ from app.group_lottery import run_group_lottery_scheduler
 from app.handlers import build_router
 
 
-async def set_commands(bot: Bot) -> None:
-    commands = [
+def private_commands() -> list[BotCommand]:
+    return [
         BotCommand(command="start", description="打开个人中心"),
         BotCommand(command="points", description="查看积分"),
         BotCommand(command="verify", description="检查入群资格"),
@@ -33,7 +39,33 @@ async def set_commands(bot: Bot) -> None:
         BotCommand(command="lotteries", description="管理员查看群抽奖"),
         BotCommand(command="drawlottery", description="管理员群抽奖开奖"),
     ]
-    await bot.set_my_commands(commands)
+
+
+def group_commands() -> list[BotCommand]:
+    return [
+        BotCommand(command="checkin", description="每日签到"),
+        BotCommand(command="pointrank", description="积分排行榜"),
+    ]
+
+
+def group_admin_commands() -> list[BotCommand]:
+    return [
+        *group_commands(),
+        BotCommand(command="grouplottery", description="发起群抽奖"),
+        BotCommand(command="lotteries", description="查看群抽奖"),
+        BotCommand(command="drawlottery", description="群抽奖开奖"),
+    ]
+
+
+async def set_commands(bot: Bot) -> None:
+    commands = private_commands()
+    await bot.set_my_commands(commands, scope=BotCommandScopeDefault())
+    await bot.set_my_commands(commands, scope=BotCommandScopeAllPrivateChats())
+    await bot.set_my_commands(group_commands(), scope=BotCommandScopeAllGroupChats())
+    await bot.set_my_commands(
+        group_admin_commands(),
+        scope=BotCommandScopeAllChatAdministrators(),
+    )
 
 
 async def main() -> None:

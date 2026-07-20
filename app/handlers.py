@@ -909,7 +909,7 @@ def build_router(settings: Settings, db: Database) -> Router:
         if not message.from_user or not is_group_chat(message):
             return
         await ensure_message_user(message)
-        await message.reply(await run_checkin(message.from_user.id, include_points=False))
+        await message.reply(await run_checkin(message.from_user.id))
 
     @root_router.message(F.chat.type != ChatType.PRIVATE, Command("addcards"))
     async def reject_group_add_cards(message: Message, bot: Bot) -> None:
