@@ -14,6 +14,7 @@ from aiogram.exceptions import (
 )
 
 from app.database import Database, GroupLotteryDrawOutcome, utc_now
+from app.i18n import DEFAULT_LANGUAGE, Language, is_english
 from app.privacy import masked_user_link
 
 
@@ -44,6 +45,23 @@ GROUP_LOTTERY_USAGE = (
     "抽奖\n"
     "群福利积分抽奖"
 )
+
+GROUP_LOTTERY_USAGE_EN = (
+    "Usage:\n"
+    "/grouplottery points &lt;points&gt; &lt;winners&gt; time &lt;duration&gt; &lt;trigger&gt; &lt;title&gt;\n"
+    "/grouplottery product &lt;product_id&gt; &lt;winners&gt; count &lt;participants&gt; &lt;trigger&gt; &lt;title&gt;\n\n"
+    "Examples:\n"
+    "/grouplottery points 20 3 time 10m draw Group points giveaway\n"
+    "/grouplottery product 1 1 count 50 card Group card-code giveaway\n\n"
+    "Multi-line format is also supported:\n"
+    "/grouplottery points 20 3 time 10m\n"
+    "draw\n"
+    "Group points giveaway"
+)
+
+
+def group_lottery_usage(lang: Language = DEFAULT_LANGUAGE) -> str:
+    return GROUP_LOTTERY_USAGE_EN if is_english(lang) else GROUP_LOTTERY_USAGE
 
 
 def parse_duration_seconds(raw_value: str) -> int | None:
@@ -148,17 +166,28 @@ def display_user(user_id: int, username: str | None, first_name: str | None) -> 
     return masked_user_link(user_id, username, first_name)
 
 
-def prize_label(prize_type: str, prize_value: int, product_name: str = "") -> str:
+def prize_label(
+    prize_type: str,
+    prize_value: int,
+    product_name: str = "",
+    lang: Language = DEFAULT_LANGUAGE,
+) -> str:
     if prize_type == "points":
-        return f"{prize_value} 积分"
+        return f"{prize_value} points" if is_english(lang) else f"{prize_value} 积分"
     if product_name:
-        return f"{escape(product_name)} 卡密"
+        return (
+            f"{escape(product_name)} card code"
+            if is_english(lang)
+            else f"{escape(product_name)} 卡密"
+        )
+    if is_english(lang):
+        return f"Product #{prize_value} card code"
     return f"商品 #{prize_value} 卡密"
 
 
-def format_draw_at(value: str | None) -> str:
+def format_draw_at(value: str | None, lang: Language = DEFAULT_LANGUAGE) -> str:
     if not value:
-        return "待定"
+        return "TBD" if is_english(lang) else "待定"
     try:
         draw_at = datetime.fromisoformat(value)
     except ValueError:
@@ -171,16 +200,43 @@ def group_lottery_announcement(
     lottery_id: int,
     parsed: ParsedGroupLotteryCommand,
     product_name: str = "",
+    lang: Language = DEFAULT_LANGUAGE,
 ) -> str:
     if parsed.draw_mode == "time":
-        mode = f"定时开奖：<code>{escape(format_draw_at(parsed.draw_at))}</code>"
+        if is_english(lang):
+            mode = (
+                "Draw time: "
+                f"<code>{escape(format_draw_at(parsed.draw_at, lang))}</code>"
+            )
+        else:
+            mode = (
+                "定时开奖："
+                f"<code>{escape(format_draw_at(parsed.draw_at, lang))}</code>"
+            )
     else:
-        mode = f"满 <b>{parsed.target_participants}</b> 人自动开奖"
+        mode = (
+            f"Auto draw at <b>{parsed.target_participants}</b> participants"
+            if is_english(lang)
+            else f"满 <b>{parsed.target_participants}</b> 人自动开奖"
+        )
+    if is_english(lang):
+        return (
+            "🎉 <b>Group Lottery Started</b>\n\n"
+            f"ID: <code>{lottery_id}</code>\n"
+            f"Title: <b>{escape(parsed.title)}</b>\n"
+            "Prize: "
+            f"<b>{prize_label(parsed.prize_type, parsed.prize_value, product_name, lang)}</b>\n"
+            f"Winners: <b>{parsed.winner_count}</b>\n"
+            f"{mode}\n\n"
+            f"Trigger phrase: <code>{escape(parsed.trigger_text)}</code>\n"
+            "Send the exact phrase in this group to join."
+        )
     return (
         "🎉 <b>群抽奖已开启</b>\n\n"
         f"编号：<code>{lottery_id}</code>\n"
         f"标题：<b>{escape(parsed.title)}</b>\n"
-        f"奖品：<b>{prize_label(parsed.prize_type, parsed.prize_value, product_name)}</b>\n"
+        "奖品："
+        f"<b>{prize_label(parsed.prize_type, parsed.prize_value, product_name, lang)}</b>\n"
         f"中奖人数：<b>{parsed.winner_count}</b>\n"
         f"{mode}\n\n"
         f"参与口令：<code>{escape(parsed.trigger_text)}</code>\n"
@@ -194,12 +250,18 @@ def participation_message(
     first_name: str | None,
     participant_count: int,
     target_participants: int | None,
+    lang: Language = DEFAULT_LANGUAGE,
 ) -> str:
     count_text = (
         f"{participant_count}/{target_participants}"
         if target_participants is not None
         else str(participant_count)
     )
+    if is_english(lang):
+        return (
+            f"✅ {display_user(user_id, username, first_name)} joined successfully\n"
+            f"Participants: <b>{count_text}</b>"
+        )
     return (
         f"✅ {display_user(user_id, username, first_name)} 参与成功\n"
         f"当前参与人数：<b>{count_text}</b>"
@@ -212,6 +274,7 @@ async def deliver_group_lottery_result(
     lottery_id: int,
     *,
     cancel_on_failure: bool = False,
+    lang: Language = DEFAULT_LANGUAGE,
 ) -> GroupLotteryDrawOutcome:
     lottery = await db.get_group_lottery(lottery_id)
     if not lottery:
@@ -220,11 +283,11 @@ async def deliver_group_lottery_result(
     chat_id = int(lottery["chat_id"])
     outcome = await db.draw_group_lottery(lottery_id)
     if outcome.status == "ok":
-        failed_private_messages = await send_winner_private_messages(bot, outcome)
+        failed_private_messages = await send_winner_private_messages(bot, db, outcome)
         await bot.send_message(
             chat_id,
             group_lottery_result_message(
-                lottery_id, outcome, failed_private_messages
+                lottery_id, outcome, failed_private_messages, lang
             ),
         )
         return outcome
@@ -234,28 +297,54 @@ async def deliver_group_lottery_result(
             await db.cancel_group_lottery(lottery_id)
         await bot.send_message(
             chat_id,
-            group_lottery_failure_message(lottery_id, outcome, cancelled=cancel_on_failure),
+            group_lottery_failure_message(
+                lottery_id, outcome, cancelled=cancel_on_failure, lang=lang
+            ),
         )
     elif outcome.status == "drawn":
-        await bot.send_message(chat_id, f"🎲 抽奖 <code>{lottery_id}</code> 已经开奖。")
+        await bot.send_message(
+            chat_id,
+            (
+                f"🎲 Lottery <code>{lottery_id}</code> has already been drawn."
+                if is_english(lang)
+                else f"🎲 抽奖 <code>{lottery_id}</code> 已经开奖。"
+            ),
+        )
     elif outcome.status == "cancelled":
-        await bot.send_message(chat_id, f"🎲 抽奖 <code>{lottery_id}</code> 已取消。")
+        await bot.send_message(
+            chat_id,
+            (
+                f"🎲 Lottery <code>{lottery_id}</code> has been cancelled."
+                if is_english(lang)
+                else f"🎲 抽奖 <code>{lottery_id}</code> 已取消。"
+            ),
+        )
     return outcome
 
 
 async def send_winner_private_messages(
-    bot: Bot, outcome: GroupLotteryDrawOutcome
+    bot: Bot, db: Database, outcome: GroupLotteryDrawOutcome
 ) -> list[str]:
     failed_private_messages: list[str] = []
     for winner in outcome.winners:
+        lang = await db.get_user_language(winner.user_id)
         if winner.prize_type == "product":
-            text = (
-                "🎉 <b>群抽奖中奖啦！</b>\n\n"
-                f"抽奖：{escape(outcome.title)}\n"
-                f"奖品：{escape(winner.prize_name)}\n"
-                f"卡密：<code>{escape(winner.code)}</code>\n\n"
-                "请妥善保存；如发送中断，可使用 /mycards 找回。"
-            )
+            if is_english(lang):
+                text = (
+                    "🎉 <b>You won the group lottery!</b>\n\n"
+                    f"Lottery: {escape(outcome.title)}\n"
+                    f"Prize: {escape(winner.prize_name)}\n"
+                    f"Card code: <code>{escape(winner.code)}</code>\n\n"
+                    "Keep it safe. If delivery is interrupted, use /mycards to recover it."
+                )
+            else:
+                text = (
+                    "🎉 <b>群抽奖中奖啦！</b>\n\n"
+                    f"抽奖：{escape(outcome.title)}\n"
+                    f"奖品：{escape(winner.prize_name)}\n"
+                    f"卡密：<code>{escape(winner.code)}</code>\n\n"
+                    "请妥善保存；如发送中断，可使用 /mycards 找回。"
+                )
             try:
                 await bot.send_message(winner.user_id, text, protect_content=True)
             except (TelegramBadRequest, TelegramForbiddenError):
@@ -264,12 +353,19 @@ async def send_winner_private_messages(
                 )
         elif winner.prize_type == "points":
             try:
-                await bot.send_message(
-                    winner.user_id,
-                    "🎉 <b>群抽奖中奖啦！</b>\n\n"
-                    f"抽奖：{escape(outcome.title)}\n"
-                    f"奖品：<b>{winner.points_delta}</b> 积分，已到账。",
-                )
+                if is_english(lang):
+                    text = (
+                        "🎉 <b>You won the group lottery!</b>\n\n"
+                        f"Lottery: {escape(outcome.title)}\n"
+                        f"Prize: <b>{winner.points_delta}</b> points have been credited."
+                    )
+                else:
+                    text = (
+                        "🎉 <b>群抽奖中奖啦！</b>\n\n"
+                        f"抽奖：{escape(outcome.title)}\n"
+                        f"奖品：<b>{winner.points_delta}</b> 积分，已到账。"
+                    )
+                await bot.send_message(winner.user_id, text)
             except (TelegramBadRequest, TelegramForbiddenError):
                 logger.info("无法通知群抽奖中奖者 user_id=%s", winner.user_id)
     return failed_private_messages
@@ -279,34 +375,57 @@ def group_lottery_result_message(
     lottery_id: int,
     outcome: GroupLotteryDrawOutcome,
     failed_private_messages: list[str] | None = None,
+    lang: Language = DEFAULT_LANGUAGE,
 ) -> str:
     winner_lines = [
         display_user(winner.user_id, winner.username, winner.first_name)
         for winner in outcome.winners
     ]
-    result_lines = [
-        "🎊 <b>群抽奖已开奖</b>",
-        "",
-        f"编号：<code>{lottery_id}</code>",
-        f"标题：<b>{escape(outcome.title)}</b>",
-        f"参与人数：<b>{outcome.participant_count}</b>",
-        f"奖品：<b>{escape(outcome.prize_name)}</b>",
-        "",
-        "<b>中奖用户：</b>",
-        *[f"• {line}" for line in winner_lines],
-    ]
+    if is_english(lang):
+        result_lines = [
+            "🎊 <b>Group Lottery Drawn</b>",
+            "",
+            f"ID: <code>{lottery_id}</code>",
+            f"Title: <b>{escape(outcome.title)}</b>",
+            f"Participants: <b>{outcome.participant_count}</b>",
+            f"Prize: <b>{escape(outcome.prize_name)}</b>",
+            "",
+            "<b>Winners:</b>",
+            *[f"• {line}" for line in winner_lines],
+        ]
+    else:
+        result_lines = [
+            "🎊 <b>群抽奖已开奖</b>",
+            "",
+            f"编号：<code>{lottery_id}</code>",
+            f"标题：<b>{escape(outcome.title)}</b>",
+            f"参与人数：<b>{outcome.participant_count}</b>",
+            f"奖品：<b>{escape(outcome.prize_name)}</b>",
+            "",
+            "<b>中奖用户：</b>",
+            *[f"• {line}" for line in winner_lines],
+        ]
     if outcome.prize_type == "product":
         result_lines.extend(
             [
                 "",
-                "卡密已私聊发送；未收到的中奖用户请先私聊机器人，然后发送 /mycards 找回。",
+                (
+                    "Card codes were sent by private message. If you did not receive one, "
+                    "open a private chat with the bot and send /mycards."
+                    if is_english(lang)
+                    else "卡密已私聊发送；未收到的中奖用户请先私聊机器人，然后发送 /mycards 找回。"
+                ),
             ]
         )
     if failed_private_messages:
         result_lines.extend(
             [
                 "",
-                "以下用户尚未开启私聊，需主动私聊机器人兑奖：",
+                (
+                    "These users have not opened a private chat with the bot yet:"
+                    if is_english(lang)
+                    else "以下用户尚未开启私聊，需主动私聊机器人兑奖："
+                ),
                 *[f"• {line}" for line in failed_private_messages],
             ]
         )
@@ -314,8 +433,24 @@ def group_lottery_result_message(
 
 
 def group_lottery_failure_message(
-    lottery_id: int, outcome: GroupLotteryDrawOutcome, *, cancelled: bool
+    lottery_id: int,
+    outcome: GroupLotteryDrawOutcome,
+    *,
+    cancelled: bool,
+    lang: Language = DEFAULT_LANGUAGE,
 ) -> str:
+    if is_english(lang):
+        suffix = "This lottery has been cancelled." if cancelled else "Please draw it later."
+        if outcome.status == "no_participants":
+            return f"🎲 Lottery <code>{lottery_id}</code> has no participants. {suffix}"
+        if outcome.status == "product_inactive":
+            return f"🎲 Lottery <code>{lottery_id}</code>'s prize product is inactive. {suffix}"
+        if outcome.status == "insufficient_stock":
+            return (
+                f"🎲 Lottery <code>{lottery_id}</code> does not have enough prize stock. "
+                f"Current stock {outcome.stock}, required {outcome.winner_count}. {suffix}"
+            )
+        return f"🎲 Lottery <code>{lottery_id}</code> cannot be drawn now. {suffix}"
     suffix = "本次抽奖已取消。" if cancelled else "请稍后再开奖。"
     if outcome.status == "no_participants":
         return f"🎲 抽奖 <code>{lottery_id}</code> 没有人参与，{suffix}"

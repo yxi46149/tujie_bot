@@ -32,14 +32,21 @@ from aiogram.types import (
 from app.config import ChatId, Settings
 from app.database import Database
 from app.group_lottery import (
-    GROUP_LOTTERY_USAGE,
     deliver_group_lottery_result,
     format_draw_at,
     group_lottery_announcement,
+    group_lottery_usage,
     parse_group_lottery_command,
     participation_message,
 )
-from app.keyboards import lottery_menu, main_menu, product_menu, shop_menu
+from app.i18n import DEFAULT_LANGUAGE, Language, is_english, normalize_language, pick
+from app.keyboards import (
+    language_menu,
+    lottery_menu,
+    main_menu,
+    product_menu,
+    shop_menu,
+)
 from app.privacy import masked_user_link
 from app.texts import (
     help_message,
@@ -339,71 +346,102 @@ def build_router(settings: Settings, db: Database) -> Router:
             local_end.astimezone(timezone.utc).isoformat(timespec="seconds"),
         )
 
-    async def ensure_message_user(message: Message) -> None:
-        if message.from_user:
-            await db.register_user(
-                message.from_user.id,
-                message.from_user.username,
-                message.from_user.first_name,
-            )
+    async def ensure_message_user(message: Message) -> Language:
+        if not message.from_user:
+            return DEFAULT_LANGUAGE
+        await db.register_user(
+            message.from_user.id,
+            message.from_user.username,
+            message.from_user.first_name,
+        )
+        return await db.get_user_language(message.from_user.id)
 
-    async def ensure_callback_user(callback: CallbackQuery) -> None:
+    async def ensure_callback_user(callback: CallbackQuery) -> Language:
         await db.register_user(
             callback.from_user.id,
             callback.from_user.username,
             callback.from_user.first_name,
         )
+        return await db.get_user_language(callback.from_user.id)
 
     async def render_profile(user_id: int) -> str:
+        lang = await db.get_user_language(user_id)
         user = await db.get_user(user_id)
         points = int(user["points"]) if user else 0
-        return profile(user_id, points, settings.invite_reward)
+        return profile(user_id, points, settings.invite_reward, lang)
 
-    async def render_points(user_id: int) -> str:
+    async def render_points(user_id: int, lang: Language) -> str:
         user = await db.get_user(user_id)
         verified, _ = await db.get_invite_counts(user_id)
-        return points_message(int(user["points"]) if user else 0, verified)
+        return points_message(int(user["points"]) if user else 0, verified, lang)
 
-    async def render_invite(user_id: int, bot: Bot) -> str:
+    async def render_invite(user_id: int, bot: Bot, lang: Language) -> str:
         me = await bot.get_me()
         link = f"https://t.me/{me.username}?start=ref_{user_id}"
-        return invite_message(link, settings.invite_reward)
+        return invite_message(link, settings.invite_reward, lang)
 
-    async def render_my_invites(user_id: int) -> str:
+    async def render_my_invites(user_id: int, lang: Language) -> str:
         verified, pending = await db.get_invite_counts(user_id)
         rows = await db.get_recent_invites(user_id)
-        return invites_message(verified, pending, rows)
+        return invites_message(verified, pending, rows, lang)
 
-    async def render_my_cards(user_id: int) -> str:
-        return my_cards_message(await db.get_user_redemptions(user_id))
+    async def render_my_cards(user_id: int, lang: Language) -> str:
+        return my_cards_message(await db.get_user_redemptions(user_id), lang)
 
-    async def render_rank() -> str:
-        return rank_message(await db.get_rank())
+    async def render_rank(lang: Language) -> str:
+        return rank_message(await db.get_rank(), lang)
 
-    async def render_points_rank() -> str:
-        return points_rank_message(await db.get_points_rank())
+    async def render_points_rank(lang: Language) -> str:
+        return points_rank_message(await db.get_points_rank(), lang)
 
     def is_lottery_prize_drawable(prize: object) -> bool:
         if str(prize["prize_type"]) != "product":  # type: ignore[index]
             return True
         return bool(prize["product_is_active"]) and int(prize["stock"] or 0) > 0  # type: ignore[index]
 
-    async def run_checkin(user_id: int, *, include_points: bool = True) -> str:
+    async def run_checkin(
+        user_id: int,
+        lang: Language,
+        *,
+        include_points: bool = True,
+    ) -> str:
         local_date = datetime.now(settings.timezone).date().isoformat()
         outcome = await db.claim_checkin(user_id, local_date, settings.checkin_reward)
-        points_hint = "💬 当前积分请私聊机器人发送 /points 查看。"
+        points_hint = pick(
+            lang,
+            "💬 当前积分请私聊机器人发送 /points 查看。",
+            "💬 Send /points in private chat to view your points.",
+        )
         if outcome.claimed:
             if not include_points:
-                return f"✅ 签到成功！+{settings.checkin_reward} 积分\n{points_hint}"
+                return (
+                    f"✅ Check-in successful! +{settings.checkin_reward} points\n{points_hint}"
+                    if is_english(lang)
+                    else f"✅ 签到成功！+{settings.checkin_reward} 积分\n{points_hint}"
+                )
+            if is_english(lang):
+                return (
+                    f"✅ Check-in successful! +{settings.checkin_reward} points\n"
+                    f"💰 Current points: <b>{outcome.points}</b>"
+                )
             return (
                 f"✅ 签到成功！+{settings.checkin_reward} 积分\n"
                 f"💰 当前积分：<b>{outcome.points}</b>"
             )
         if not include_points:
-            return f"ℹ️ 今天已经签到过了，请明天再来。\n{points_hint}"
+            return (
+                f"ℹ️ You have already checked in today. Come back tomorrow.\n{points_hint}"
+                if is_english(lang)
+                else f"ℹ️ 今天已经签到过了，请明天再来。\n{points_hint}"
+            )
+        if is_english(lang):
+            return (
+                "ℹ️ You have already checked in today. Come back tomorrow.\n"
+                f"💰 Current points: <b>{outcome.points}</b>"
+            )
         return f"ℹ️ 今天已经签到过了，请明天再来。\n💰 当前积分：<b>{outcome.points}</b>"
 
-    async def render_lottery(user_id: int) -> tuple[str, bool]:
+    async def render_lottery(user_id: int, lang: Language) -> tuple[str, bool]:
         user = await db.get_user(user_id)
         points = int(user["points"]) if user else 0
         prizes = [
@@ -411,48 +449,102 @@ def build_router(settings: Settings, db: Database) -> Router:
             for prize in await db.list_lottery_prizes()
             if is_lottery_prize_drawable(prize)
         ]
-        lines = [
-            "🎲 <b>积分抽奖</b>",
-            "",
-            f"每次消耗：<b>{settings.lottery_cost}</b> 积分",
-            f"当前积分：<b>{points}</b>",
-        ]
+        lines = (
+            [
+                "🎲 <b>Points Lottery</b>",
+                "",
+                f"Cost per draw: <b>{settings.lottery_cost}</b> points",
+                f"Current points: <b>{points}</b>",
+            ]
+            if is_english(lang)
+            else [
+                "🎲 <b>积分抽奖</b>",
+                "",
+                f"每次消耗：<b>{settings.lottery_cost}</b> 积分",
+                f"当前积分：<b>{points}</b>",
+            ]
+        )
         if not prizes:
-            lines.extend(["", "奖池暂未配置，稍后再来。"])
+            lines.extend(
+                [
+                    "",
+                    (
+                        "The prize pool is not configured yet. Please come back later."
+                        if is_english(lang)
+                        else "奖池暂未配置，稍后再来。"
+                    ),
+                ]
+            )
             return "\n".join(lines), False
 
         total_weight = sum(int(prize["weight"]) for prize in prizes)
-        lines.extend(["", "<b>当前奖池：</b>"])
+        lines.extend(
+            ["", "<b>Current prize pool:</b>" if is_english(lang) else "<b>当前奖池：</b>"]
+        )
         for prize in prizes:
             prize_type = str(prize["prize_type"])
             weight = int(prize["weight"])
             chance = weight / total_weight * 100
             if prize_type == "points":
-                detail = f"+{int(prize['points_delta'])} 积分"
+                detail = (
+                    f"+{int(prize['points_delta'])} points"
+                    if is_english(lang)
+                    else f"+{int(prize['points_delta'])} 积分"
+                )
             elif prize_type == "product":
-                detail = f"卡密奖品，库存 {int(prize['stock'] or 0)}"
+                detail = (
+                    f"Card-code prize, stock {int(prize['stock'] or 0)}"
+                    if is_english(lang)
+                    else f"卡密奖品，库存 {int(prize['stock'] or 0)}"
+                )
             else:
-                detail = "谢谢参与"
+                detail = "No prize" if is_english(lang) else "谢谢参与"
+            chance_label = "approx." if is_english(lang) else "约"
             lines.append(
-                f"• {escape(str(prize['name']))}｜{detail}｜约 {chance:.1f}%"
+                f"• {escape(str(prize['name']))} | {detail} | {chance_label} {chance:.1f}%"
             )
         return "\n".join(lines), True
 
-    async def run_lottery_draw(user_id: int) -> tuple[str, bool]:
+    async def run_lottery_draw(user_id: int, lang: Language) -> tuple[str, bool]:
         outcome = await db.draw_lottery(user_id, settings.lottery_cost)
         if outcome.status == "no_prizes":
-            return "🎲 奖池暂未配置，或卡密奖品暂无库存。", False
+            return (
+                "🎲 The prize pool is not configured, or card-code prizes are out of stock."
+                if is_english(lang)
+                else "🎲 奖池暂未配置，或卡密奖品暂无库存。"
+            ), False
         if outcome.status == "insufficient_points":
+            if is_english(lang):
+                return (
+                    f"❌ Not enough points. This draw requires <b>{outcome.cost}</b> "
+                    f"points; you currently have <b>{outcome.points}</b> points."
+                ), False
             return (
                 f"❌ 积分不足，本次抽奖需要 <b>{outcome.cost}</b> 积分，"
                 f"您当前有 <b>{outcome.points}</b> 积分。"
             ), False
         if outcome.status == "not_registered":
-            return "请先发送 /start 创建个人账户后再抽奖。", False
+            return (
+                "Please send /start first to create your account before drawing."
+                if is_english(lang)
+                else "请先发送 /start 创建个人账户后再抽奖。"
+            ), False
         if outcome.status != "ok":
-            return "⚠️ 抽奖失败，请稍后重试。", False
+            return (
+                "⚠️ Lottery draw failed. Please try again later."
+                if is_english(lang)
+                else "⚠️ 抽奖失败，请稍后重试。"
+            ), False
 
         if outcome.prize_type == "points":
+            if is_english(lang):
+                return (
+                    "🎉 <b>You won!</b>\n\n"
+                    f"Prize: {escape(outcome.prize_name)}\n"
+                    f"Received: <b>{outcome.points_delta}</b> points\n"
+                    f"Cost: <b>{outcome.cost}</b> points\n"
+                    f"Remaining points: <b>{outcome.points}</b>"
+                ), False
             return (
                 "🎉 <b>中奖啦！</b>\n\n"
                 f"奖品：{escape(outcome.prize_name)}\n"
@@ -461,6 +553,15 @@ def build_router(settings: Settings, db: Database) -> Router:
                 f"剩余积分：<b>{outcome.points}</b>"
             ), False
         if outcome.prize_type == "product":
+            if is_english(lang):
+                return (
+                    "🎉 <b>You won!</b>\n\n"
+                    f"Prize: {escape(outcome.prize_name)}\n"
+                    f"Card code: <code>{escape(outcome.code)}</code>\n"
+                    f"Cost: <b>{outcome.cost}</b> points\n"
+                    f"Remaining points: <b>{outcome.points}</b>\n\n"
+                    "Keep it safe. If delivery is interrupted, use /mycards to recover it."
+                ), True
             return (
                 "🎉 <b>中奖啦！</b>\n\n"
                 f"奖品：{escape(outcome.prize_name)}\n"
@@ -469,6 +570,13 @@ def build_router(settings: Settings, db: Database) -> Router:
                 f"剩余积分：<b>{outcome.points}</b>\n\n"
                 "请妥善保存；如发送中断，可使用 /mycards 找回。"
             ), True
+        if is_english(lang):
+            return (
+                "😔 <b>No prize this time</b>\n\n"
+                f"Result: {escape(outcome.prize_name)}\n"
+                f"Cost: <b>{outcome.cost}</b> points\n"
+                f"Remaining points: <b>{outcome.points}</b>"
+            ), False
         return (
             "😔 <b>很遗憾，本次未中奖</b>\n\n"
             f"奖品：{escape(outcome.prize_name)}\n"
@@ -476,23 +584,36 @@ def build_router(settings: Settings, db: Database) -> Router:
             f"剩余积分：<b>{outcome.points}</b>"
         ), False
 
-    async def run_verification(user_id: int, bot: Bot) -> str:
+    async def run_verification(user_id: int, bot: Bot, lang: Language) -> str:
         if not settings.required_chat_ids:
-            return "⚠️ 管理员尚未配置 REQUIRED_CHAT_IDS，暂时无法检查资格。"
+            return pick(
+                lang,
+                "⚠️ 管理员尚未配置 REQUIRED_CHAT_IDS，暂时无法检查资格。",
+                "⚠️ REQUIRED_CHAT_IDS is not configured yet. Verification is unavailable.",
+            )
 
         remaining = verification_cooldown_remaining(user_id)
         if remaining:
-            return f"⏳ 检查过于频繁，请在 {remaining} 秒后重试。"
+            return (
+                f"⏳ Too many checks. Please try again in {remaining} seconds."
+                if is_english(lang)
+                else f"⏳ 检查过于频繁，请在 {remaining} 秒后重试。"
+            )
 
         async with verification_semaphore:
             result = await check_membership(bot, user_id, settings.required_chat_ids)
         if result.errors:
-            return (
-                "⚠️ 暂时无法检查资格。请管理员确认机器人已加入所有指定"
-                "群/频道，并拥有查看成员的权限。"
+            return pick(
+                lang,
+                "⚠️ 暂时无法检查资格。请管理员确认机器人已加入所有指定群/频道，并拥有查看成员的权限。",
+                "⚠️ Verification is temporarily unavailable. Please ask an admin to confirm the bot is in all required groups/channels and can view members.",
             )
         if result.missing:
-            return "❌ 尚未加入全部指定群/频道，请加入后重新点击检查。"
+            return pick(
+                lang,
+                "❌ 尚未加入全部指定群/频道，请加入后重新点击检查。",
+                "❌ You have not joined all required groups/channels yet. Please join them and check again.",
+            )
 
         day_start_utc, day_end_utc = reward_day_window()
         outcome = await db.verify_and_reward(
@@ -504,56 +625,98 @@ def build_router(settings: Settings, db: Database) -> Router:
         )
         if outcome.rewarded and outcome.inviter_id:
             try:
+                inviter_lang = await db.get_user_language(outcome.inviter_id)
+                if is_english(inviter_lang):
+                    inviter_text = (
+                        "🎉 A friend you invited has passed verification!\n"
+                        f"💰 You received <b>{outcome.reward_points}</b> points."
+                    )
+                else:
+                    inviter_text = (
+                        "🎉 您邀请的好友已完成资格验证！\n"
+                        f"💰 已获得 <b>{outcome.reward_points}</b> 积分。"
+                    )
                 await bot.send_message(
                     outcome.inviter_id,
-                    "🎉 您邀请的好友已完成资格验证！\n"
-                    f"💰 已获得 <b>{outcome.reward_points}</b> 积分。",
+                    inviter_text,
                 )
             except (TelegramBadRequest, TelegramForbiddenError):
                 logger.info("无法通知邀请人 user_id=%s", outcome.inviter_id)
-            return "✅ 资格验证通过，邀请人的积分已经结算。"
+            return pick(
+                lang,
+                "✅ 资格验证通过，邀请人的积分已经结算。",
+                "✅ Verification passed. The inviter's points have been settled.",
+            )
         if outcome.settled and outcome.limited:
-            return "✅ 资格验证通过；邀请人今日奖励已达上限，本次邀请已记录但不再加分。"
-        return "✅ 资格验证通过！"
+            return pick(
+                lang,
+                "✅ 资格验证通过；邀请人今日奖励已达上限，本次邀请已记录但不再加分。",
+                "✅ Verification passed. The inviter has reached today's reward limit, so this invite was recorded without extra points.",
+            )
+        return "✅ Verification passed!" if is_english(lang) else "✅ 资格验证通过！"
 
-    async def send_shop_message(message: Message) -> None:
+    async def send_shop_message(message: Message, lang: Language) -> None:
         products = await db.list_products()
         if not products:
-            await message.answer("🛒 商城暂时没有可兑换的商品。")
+            await message.answer(
+                "🛒 The shop has no redeemable products yet."
+                if is_english(lang)
+                else "🛒 商城暂时没有可兑换的商品。"
+            )
             return
         await message.answer(
-            "🛒 <b>积分商城</b>\n\n请选择要兑换的商品：",
-            reply_markup=shop_menu(products),
+            (
+                "🛒 <b>Points Shop</b>\n\nChoose a product to redeem:"
+                if is_english(lang)
+                else "🛒 <b>积分商城</b>\n\n请选择要兑换的商品："
+            ),
+            reply_markup=shop_menu(products, lang),
         )
 
-    async def send_shop_callback(callback: CallbackQuery, bot: Bot) -> None:
+    async def send_shop_callback(
+        callback: CallbackQuery, bot: Bot, lang: Language
+    ) -> None:
         products = await db.list_products()
         if not products:
-            await answer_callback(callback, bot, "🛒 商城暂时没有可兑换的商品。")
+            await answer_callback(
+                callback,
+                bot,
+                (
+                    "🛒 The shop has no redeemable products yet."
+                    if is_english(lang)
+                    else "🛒 商城暂时没有可兑换的商品。"
+                ),
+            )
             return
         await answer_callback(
             callback,
             bot,
-            "🛒 <b>积分商城</b>\n\n请选择要兑换的商品：",
-            reply_markup=shop_menu(products),
+            (
+                "🛒 <b>Points Shop</b>\n\nChoose a product to redeem:"
+                if is_english(lang)
+                else "🛒 <b>积分商城</b>\n\n请选择要兑换的商品："
+            ),
+            reply_markup=shop_menu(products, lang),
         )
 
-    async def send_lottery_message(message: Message) -> None:
+    async def send_lottery_message(message: Message, lang: Language) -> None:
         if not message.from_user:
             return
-        text, has_prizes = await render_lottery(message.from_user.id)
+        text, has_prizes = await render_lottery(message.from_user.id, lang)
         await message.answer(
             text,
-            reply_markup=lottery_menu(settings.lottery_cost, has_prizes),
+            reply_markup=lottery_menu(settings.lottery_cost, has_prizes, lang),
         )
 
-    async def send_lottery_callback(callback: CallbackQuery, bot: Bot) -> None:
-        text, has_prizes = await render_lottery(callback.from_user.id)
+    async def send_lottery_callback(
+        callback: CallbackQuery, bot: Bot, lang: Language
+    ) -> None:
+        text, has_prizes = await render_lottery(callback.from_user.id, lang)
         await answer_callback(
             callback,
             bot,
             text,
-            reply_markup=lottery_menu(settings.lottery_cost, has_prizes),
+            reply_markup=lottery_menu(settings.lottery_cost, has_prizes, lang),
         )
 
     async def handle_group_lottery_participation(
@@ -561,18 +724,27 @@ def build_router(settings: Settings, db: Database) -> Router:
     ) -> None:
         if not message.from_user:
             return
+        lang = await db.get_user_language(message.from_user.id)
         if settings.required_chat_ids:
             result = await check_membership(
                 bot, message.from_user.id, settings.required_chat_ids
             )
             if result.errors:
-                await message.reply("暂时无法检查资格，请稍后再试。")
+                await message.reply(
+                    "Cannot verify eligibility right now. Please try again later."
+                    if is_english(lang)
+                    else "暂时无法检查资格，请稍后再试。"
+                )
                 return
             if result.missing:
-                await message.reply("请先加入指定群/频道，再参与抽奖。")
+                await message.reply(
+                    "Please join the required groups/channels before entering the lottery."
+                    if is_english(lang)
+                    else "请先加入指定群/频道，再参与抽奖。"
+                )
                 return
 
-        await ensure_message_user(message)
+        lang = await ensure_message_user(message)
         outcome = await db.join_group_lottery(
             lottery_id,
             message.from_user.id,
@@ -580,15 +752,21 @@ def build_router(settings: Settings, db: Database) -> Router:
             message.from_user.first_name,
         )
         if outcome.status == "not_found":
-            await message.reply("抽奖不存在。")
+            await message.reply("Lottery not found." if is_english(lang) else "抽奖不存在。")
             return
         if outcome.status == "already_joined":
             return
         if outcome.status == "filled":
-            await message.reply("这个抽奖参与人数已满，正在开奖或已结束。")
+            await message.reply(
+                "This lottery is full and is being drawn or has ended."
+                if is_english(lang)
+                else "这个抽奖参与人数已满，正在开奖或已结束。"
+            )
             return
         if outcome.status != "ok":
-            await message.reply("这个抽奖已经结束。")
+            await message.reply(
+                "This lottery has ended." if is_english(lang) else "这个抽奖已经结束。"
+            )
             return
 
         feedback = await message.answer(
@@ -598,6 +776,7 @@ def build_router(settings: Settings, db: Database) -> Router:
                 message.from_user.first_name,
                 outcome.participant_count,
                 outcome.target_participants,
+                lang,
             )
         )
         await db.set_group_lottery_feedback(lottery_id, feedback.message_id)
@@ -614,40 +793,87 @@ def build_router(settings: Settings, db: Database) -> Router:
                 )
         if outcome.should_draw:
             await deliver_group_lottery_result(
-                bot, db, lottery_id, cancel_on_failure=True
+                bot, db, lottery_id, cancel_on_failure=True, lang=lang
             )
 
-    def group_lotteries_message(rows: list[object]) -> str:
+    def group_lotteries_message(rows: list[object], lang: Language) -> str:
         if not rows:
-            return "🎲 当前群没有未开奖的群抽奖。"
-        lines = ["🎲 <b>当前群未开奖抽奖</b>", ""]
+            return (
+                "🎲 This group has no pending lotteries."
+                if is_english(lang)
+                else "🎲 当前群没有未开奖的群抽奖。"
+            )
+        lines = [
+            (
+                "🎲 <b>Pending Group Lotteries</b>"
+                if is_english(lang)
+                else "🎲 <b>当前群未开奖抽奖</b>"
+            ),
+            "",
+        ]
         for row in rows:
             prize_type = str(row["prize_type"])  # type: ignore[index]
             if prize_type == "points":
-                prize = f"{int(row['points_delta'])} 积分"  # type: ignore[index]
+                prize = (  # type: ignore[index]
+                    f"{int(row['points_delta'])} points"
+                    if is_english(lang)
+                    else f"{int(row['points_delta'])} 积分"
+                )
             else:
                 product_name = row["product_name"] or f"商品 #{row['product_id']}"  # type: ignore[index]
-                prize = f"{escape(str(product_name))} 卡密"
+                prize = (
+                    f"{escape(str(product_name))} card code"
+                    if is_english(lang)
+                    else f"{escape(str(product_name))} 卡密"
+                )
 
             draw_mode = str(row["draw_mode"])  # type: ignore[index]
             participant_count = int(row["participant_count"] or 0)  # type: ignore[index]
             if draw_mode == "count":
                 mode = (
-                    f"满人 {participant_count}/{int(row['target_participants'])}"  # type: ignore[index]
+                    f"count {participant_count}/{int(row['target_participants'])}"  # type: ignore[index]
+                    if is_english(lang)
+                    else f"满人 {participant_count}/{int(row['target_participants'])}"  # type: ignore[index]
                 )
             elif draw_mode == "time":
-                mode = f"定时 {escape(format_draw_at(row['draw_at']))}"  # type: ignore[index]
+                mode = (
+                    f"timed {escape(format_draw_at(row['draw_at'], lang))}"  # type: ignore[index]
+                    if is_english(lang)
+                    else f"定时 {escape(format_draw_at(row['draw_at'], lang))}"  # type: ignore[index]
+                )
             else:
-                mode = f"手动开奖，已参与 {participant_count}"
+                mode = (
+                    f"manual, {participant_count} participants"
+                    if is_english(lang)
+                    else f"手动开奖，已参与 {participant_count}"
+                )
 
+            winner_label = "winners" if is_english(lang) else "中奖"
+            winner_unit = "" if is_english(lang) else " 人"
+            separator = " | " if is_english(lang) else "｜"
             lines.append(
-                f"#{row['id']} {escape(str(row['title']))}｜"  # type: ignore[index]
-                f"{prize}｜中奖 {int(row['winner_count'])} 人｜{mode}"  # type: ignore[index]
+                f"#{row['id']} {escape(str(row['title']))}{separator}"  # type: ignore[index]
+                f"{prize}{separator}{winner_label} {int(row['winner_count'])}{winner_unit}{separator}{mode}"  # type: ignore[index]
             )
             trigger = str(row["trigger_text"] or "")  # type: ignore[index]
             if trigger:
-                lines.append(f"口令：<code>{escape(trigger)}</code>")
-        lines.extend(["", "提前开奖：/drawlottery &lt;抽奖编号&gt;"])
+                lines.append(
+                    (
+                        f"Trigger: <code>{escape(trigger)}</code>"
+                        if is_english(lang)
+                        else f"口令：<code>{escape(trigger)}</code>"
+                    )
+                )
+        lines.extend(
+            [
+                "",
+                (
+                    "Draw early: /drawlottery &lt;lottery_id&gt;"
+                    if is_english(lang)
+                    else "提前开奖：/drawlottery &lt;抽奖编号&gt;"
+                ),
+            ]
+        )
         return "\n".join(lines)
 
     @root_router.message(F.new_chat_members)
@@ -741,19 +967,27 @@ def build_router(settings: Settings, db: Database) -> Router:
     async def command_group_lottery(
         message: Message, command: CommandObject
     ) -> None:
+        lang = await ensure_message_user(message)
         if not is_group_chat(message):
-            await message.answer("请在群聊中发起群抽奖。")
+            await message.answer(
+                "Please start group lotteries inside a group chat."
+                if is_english(lang)
+                else "请在群聊中发起群抽奖。"
+            )
             return
         if not is_admin(message):
-            await message.reply("⛔ 只有机器人管理员可以发起群抽奖。")
+            await message.reply(
+                "⛔ Only bot admins can start group lotteries."
+                if is_english(lang)
+                else "⛔ 只有机器人管理员可以发起群抽奖。"
+            )
             return
         if not message.from_user:
             return
-        await ensure_message_user(message)
 
         parsed = parse_group_lottery_command(command.args)
         if parsed is None:
-            await message.reply(GROUP_LOTTERY_USAGE)
+            await message.reply(group_lottery_usage(lang))
             return
         outcome = await db.create_group_lottery(
             message.chat.id,
@@ -768,25 +1002,44 @@ def build_router(settings: Settings, db: Database) -> Router:
             draw_at=parsed.draw_at,
         )
         if outcome.status == "invalid":
-            await message.reply(GROUP_LOTTERY_USAGE)
+            await message.reply(group_lottery_usage(lang))
             return
         if outcome.status == "duplicate_trigger":
-            await message.reply("❌ 当前群已有未开奖抽奖使用相同参与口令。")
+            await message.reply(
+                "❌ This group already has a pending lottery with the same trigger phrase."
+                if is_english(lang)
+                else "❌ 当前群已有未开奖抽奖使用相同参与口令。"
+            )
             return
         if outcome.status == "product_not_found":
-            await message.reply("❌ 商品不存在。")
+            await message.reply("❌ Product not found." if is_english(lang) else "❌ 商品不存在。")
             return
         if outcome.status == "product_inactive":
-            await message.reply("❌ 商品已下架，不能作为群抽奖奖品。")
+            await message.reply(
+                "❌ This product is inactive and cannot be used as a lottery prize."
+                if is_english(lang)
+                else "❌ 商品已下架，不能作为群抽奖奖品。"
+            )
             return
         if outcome.status == "insufficient_stock":
             await message.reply(
-                f"❌ 商品库存不足，当前库存 {outcome.stock}，"
-                f"但中奖人数是 {parsed.winner_count}。"
+                (
+                    f"❌ Not enough product stock. Current stock {outcome.stock}, "
+                    f"but winners are {parsed.winner_count}."
+                )
+                if is_english(lang)
+                else (
+                    f"❌ 商品库存不足，当前库存 {outcome.stock}，"
+                    f"但中奖人数是 {parsed.winner_count}。"
+                )
             )
             return
         if outcome.status != "ok" or outcome.lottery_id is None:
-            await message.reply("⚠️ 群抽奖创建失败，请稍后重试。")
+            await message.reply(
+                "⚠️ Failed to create group lottery. Please try again later."
+                if is_english(lang)
+                else "⚠️ 群抽奖创建失败，请稍后重试。"
+            )
             return
 
         sent = await message.answer(
@@ -794,6 +1047,7 @@ def build_router(settings: Settings, db: Database) -> Router:
                 outcome.lottery_id,
                 parsed,
                 outcome.product_name,
+                lang,
             )
         )
         await db.set_group_lottery_message(outcome.lottery_id, sent.message_id)
@@ -802,21 +1056,38 @@ def build_router(settings: Settings, db: Database) -> Router:
     async def callback_group_lottery_join(
         callback: CallbackQuery, bot: Bot
     ) -> None:
+        lang = await db.get_user_language(callback.from_user.id)
         if not callback.message or callback.message.chat.type == ChatType.PRIVATE:
-            await callback.answer("请在群抽奖消息上参与。", show_alert=True)
+            await callback.answer(
+                "Please join from the group lottery message."
+                if is_english(lang)
+                else "请在群抽奖消息上参与。",
+                show_alert=True,
+            )
             return
         try:
             lottery_id = int(str(callback.data).rsplit(":", maxsplit=1)[1])
         except (ValueError, IndexError):
-            await callback.answer("抽奖参数无效。", show_alert=True)
+            await callback.answer(
+                "Invalid lottery parameters." if is_english(lang) else "抽奖参数无效。",
+                show_alert=True,
+            )
             return
 
         lottery = await db.get_group_lottery(lottery_id)
         if not lottery or int(lottery["chat_id"]) != callback.message.chat.id:
-            await callback.answer("这个抽奖不存在或不属于当前群。", show_alert=True)
+            await callback.answer(
+                "This lottery does not exist or does not belong to this group."
+                if is_english(lang)
+                else "这个抽奖不存在或不属于当前群。",
+                show_alert=True,
+            )
             return
         if lottery["status"] != "pending":
-            await callback.answer("这个抽奖已经结束。", show_alert=True)
+            await callback.answer(
+                "This lottery has ended." if is_english(lang) else "这个抽奖已经结束。",
+                show_alert=True,
+            )
             return
 
         if settings.required_chat_ids:
@@ -825,16 +1096,22 @@ def build_router(settings: Settings, db: Database) -> Router:
             )
             if result.errors:
                 await callback.answer(
-                    "暂时无法检查资格，请稍后再试。", show_alert=True
+                    "Cannot verify eligibility right now. Please try again later."
+                    if is_english(lang)
+                    else "暂时无法检查资格，请稍后再试。",
+                    show_alert=True,
                 )
                 return
             if result.missing:
                 await callback.answer(
-                    "请先加入指定群/频道，再参与抽奖。", show_alert=True
+                    "Please join the required groups/channels before entering the lottery."
+                    if is_english(lang)
+                    else "请先加入指定群/频道，再参与抽奖。",
+                    show_alert=True,
                 )
                 return
 
-        await ensure_callback_user(callback)
+        lang = await ensure_callback_user(callback)
         outcome = await db.join_group_lottery(
             lottery_id,
             callback.from_user.id,
@@ -842,57 +1119,101 @@ def build_router(settings: Settings, db: Database) -> Router:
             callback.from_user.first_name,
         )
         if outcome.status == "not_found":
-            await callback.answer("抽奖不存在。", show_alert=True)
+            await callback.answer(
+                "Lottery not found." if is_english(lang) else "抽奖不存在。",
+                show_alert=True,
+            )
             return
         if outcome.status == "already_joined":
-            await callback.answer("你已经参与过了。", show_alert=True)
+            await callback.answer(
+                "You have already joined." if is_english(lang) else "你已经参与过了。",
+                show_alert=True,
+            )
             return
         if outcome.status == "filled":
-            await callback.answer("参与人数已满，正在开奖或已结束。", show_alert=True)
+            await callback.answer(
+                "This lottery is full and is being drawn or has ended."
+                if is_english(lang)
+                else "参与人数已满，正在开奖或已结束。",
+                show_alert=True,
+            )
             return
         if outcome.status != "ok":
-            await callback.answer("这个抽奖已经结束。", show_alert=True)
+            await callback.answer(
+                "This lottery has ended." if is_english(lang) else "这个抽奖已经结束。",
+                show_alert=True,
+            )
             return
         await callback.answer(
-            f"参与成功，当前 {outcome.participant_count} 人参与。",
+            (
+                f"Joined successfully. {outcome.participant_count} participants now."
+                if is_english(lang)
+                else f"参与成功，当前 {outcome.participant_count} 人参与。"
+            ),
             show_alert=True,
         )
         if outcome.should_draw:
             await deliver_group_lottery_result(
-                bot, db, lottery_id, cancel_on_failure=True
+                bot, db, lottery_id, cancel_on_failure=True, lang=lang
             )
 
     @root_router.message(Command("drawlottery"))
     async def command_draw_group_lottery(
         message: Message, command: CommandObject, bot: Bot
     ) -> None:
+        lang = await ensure_message_user(message)
         if not is_group_chat(message):
-            await message.answer("请在发起抽奖的群聊中开奖。")
+            await message.answer(
+                "Please draw the lottery in the group where it was started."
+                if is_english(lang)
+                else "请在发起抽奖的群聊中开奖。"
+            )
             return
         if not is_admin(message):
-            await message.reply("⛔ 只有机器人管理员可以开奖。")
+            await message.reply(
+                "⛔ Only bot admins can draw lotteries."
+                if is_english(lang)
+                else "⛔ 只有机器人管理员可以开奖。"
+            )
             return
         value = (command.args or "").strip()
         if not value.isdigit():
-            await message.reply("用法：/drawlottery &lt;抽奖编号&gt;")
+            await message.reply(
+                "Usage: /drawlottery &lt;lottery_id&gt;"
+                if is_english(lang)
+                else "用法：/drawlottery &lt;抽奖编号&gt;"
+            )
             return
         lottery_id = int(value)
         lottery = await db.get_group_lottery(lottery_id)
         if not lottery or int(lottery["chat_id"]) != message.chat.id:
-            await message.reply("❌ 这个抽奖不存在或不属于当前群。")
+            await message.reply(
+                "❌ This lottery does not exist or does not belong to this group."
+                if is_english(lang)
+                else "❌ 这个抽奖不存在或不属于当前群。"
+            )
             return
-        await deliver_group_lottery_result(bot, db, lottery_id)
+        await deliver_group_lottery_result(bot, db, lottery_id, lang=lang)
 
     @root_router.message(Command("lotteries"))
     async def command_group_lotteries(message: Message) -> None:
+        lang = await ensure_message_user(message)
         if not is_group_chat(message):
-            await message.answer("请在群聊中查看群抽奖列表。")
+            await message.answer(
+                "Please view group lotteries inside a group chat."
+                if is_english(lang)
+                else "请在群聊中查看群抽奖列表。"
+            )
             return
         if not is_admin(message):
-            await message.reply("⛔ 只有机器人管理员可以查看群抽奖列表。")
+            await message.reply(
+                "⛔ Only bot admins can view group lotteries."
+                if is_english(lang)
+                else "⛔ 只有机器人管理员可以查看群抽奖列表。"
+            )
             return
         rows = await db.list_pending_group_lotteries(message.chat.id)
-        await message.reply(group_lotteries_message(rows))
+        await message.reply(group_lotteries_message(rows, lang))
 
     @root_router.message(Command("pointrank"))
     async def command_points_rank(message: Message) -> None:
@@ -902,14 +1223,15 @@ def build_router(settings: Settings, db: Database) -> Router:
             ChatType.SUPERGROUP,
         }:
             return
-        await message.answer(await render_points_rank())
+        lang = await ensure_message_user(message)
+        await message.answer(await render_points_rank(lang))
 
     @root_router.message(F.chat.type != ChatType.PRIVATE, Command("checkin"))
     async def command_group_checkin(message: Message) -> None:
         if not message.from_user or not is_group_chat(message):
             return
-        await ensure_message_user(message)
-        await message.reply(await run_checkin(message.from_user.id))
+        lang = await ensure_message_user(message)
+        await message.reply(await run_checkin(message.from_user.id, lang))
 
     @root_router.message(F.chat.type != ChatType.PRIVATE, Command("addcards"))
     async def reject_group_add_cards(message: Message, bot: Bot) -> None:
@@ -941,7 +1263,12 @@ def build_router(settings: Settings, db: Database) -> Router:
             await handle_group_lottery_participation(message, bot, int(lottery["id"]))
             return
         if text.startswith("/"):
-            await message.reply("🔒 为保护积分和卡密，请私聊机器人使用此命令。")
+            lang = await ensure_message_user(message)
+            await message.reply(
+                "🔒 For points and card-code safety, please use this command in private chat."
+                if is_english(lang)
+                else "🔒 为保护积分和卡密，请私聊机器人使用此命令。"
+            )
 
     @router.message(CommandStart())
     async def command_start(message: Message, command: CommandObject) -> None:
@@ -953,176 +1280,259 @@ def build_router(settings: Settings, db: Database) -> Router:
             message.from_user.first_name,
             inviter_id=parse_inviter(command.args),
         )
+        lang = await db.get_user_language(message.from_user.id)
         await message.answer(
             await render_profile(message.from_user.id),
-            reply_markup=main_menu(settings.join_buttons),
+            reply_markup=main_menu(settings.join_buttons, lang),
         )
 
     @router.message(Command("points"))
     async def command_points(message: Message) -> None:
         if not message.from_user:
             return
-        await ensure_message_user(message)
-        await message.answer(await render_points(message.from_user.id))
+        lang = await ensure_message_user(message)
+        await message.answer(await render_points(message.from_user.id, lang))
 
     @router.message(Command("verify"))
     async def command_verify(message: Message, bot: Bot) -> None:
         if not message.from_user:
             return
-        await ensure_message_user(message)
-        await message.answer(await run_verification(message.from_user.id, bot))
+        lang = await ensure_message_user(message)
+        await message.answer(await run_verification(message.from_user.id, bot, lang))
 
     @router.message(Command("invite"))
     async def command_invite(message: Message, bot: Bot) -> None:
         if not message.from_user:
             return
-        await ensure_message_user(message)
-        await message.answer(await render_invite(message.from_user.id, bot))
+        lang = await ensure_message_user(message)
+        await message.answer(await render_invite(message.from_user.id, bot, lang))
 
     @router.message(Command("myinvites"))
     async def command_my_invites(message: Message) -> None:
         if not message.from_user:
             return
-        await ensure_message_user(message)
-        await message.answer(await render_my_invites(message.from_user.id))
+        lang = await ensure_message_user(message)
+        await message.answer(await render_my_invites(message.from_user.id, lang))
 
     @router.message(Command("checkin"))
     async def command_checkin(message: Message) -> None:
         if not message.from_user:
             return
-        await ensure_message_user(message)
-        await message.answer(await run_checkin(message.from_user.id))
+        lang = await ensure_message_user(message)
+        await message.answer(await run_checkin(message.from_user.id, lang))
 
     @router.message(Command("shop"))
     async def command_shop(message: Message) -> None:
-        await ensure_message_user(message)
-        await send_shop_message(message)
+        lang = await ensure_message_user(message)
+        await send_shop_message(message, lang)
 
     @router.message(Command("lottery"))
     async def command_lottery(message: Message) -> None:
-        await ensure_message_user(message)
-        await send_lottery_message(message)
+        lang = await ensure_message_user(message)
+        await send_lottery_message(message, lang)
 
     @router.message(Command("mycards"))
     async def command_my_cards(message: Message) -> None:
         if not message.from_user:
             return
-        await ensure_message_user(message)
+        lang = await ensure_message_user(message)
         await message.answer(
-            await render_my_cards(message.from_user.id), protect_content=True
+            await render_my_cards(message.from_user.id, lang), protect_content=True
         )
 
     @router.message(Command("rank"))
     async def command_rank(message: Message) -> None:
-        await ensure_message_user(message)
-        await message.answer(await render_rank())
+        lang = await ensure_message_user(message)
+        await message.answer(await render_rank(lang))
+
+    @router.message(Command("language", "lang"))
+    async def command_language(message: Message) -> None:
+        lang = await ensure_message_user(message)
+        await message.answer(
+            (
+                "🌐 <b>Language</b>\n\nChoose the language for bot replies."
+                if is_english(lang)
+                else "🌐 <b>语言设置</b>\n\n请选择机器人回复语言。"
+            ),
+            reply_markup=language_menu(lang),
+        )
 
     @router.message(Command("help"))
     async def command_help(message: Message) -> None:
-        await ensure_message_user(message)
+        lang = await ensure_message_user(message)
         await message.answer(
-            help_message(settings.invite_reward, settings.checkin_reward)
+            help_message(settings.invite_reward, settings.checkin_reward, lang)
         )
 
     @router.callback_query(F.data == "menu:verify")
     async def callback_verify(callback: CallbackQuery, bot: Bot) -> None:
-        await callback.answer("正在检查资格…")
-        await ensure_callback_user(callback)
+        lang = await ensure_callback_user(callback)
+        await callback.answer("Checking..." if is_english(lang) else "正在检查资格…")
         await answer_callback(
             callback,
             bot,
-            await run_verification(callback.from_user.id, bot),
-            reply_markup=main_menu(settings.join_buttons),
+            await run_verification(callback.from_user.id, bot, lang),
+            reply_markup=main_menu(settings.join_buttons, lang),
         )
 
     @router.callback_query(F.data == "menu:points")
     async def callback_points(callback: CallbackQuery, bot: Bot) -> None:
         await callback.answer()
-        await ensure_callback_user(callback)
-        await answer_callback(callback, bot, await render_points(callback.from_user.id))
+        lang = await ensure_callback_user(callback)
+        await answer_callback(
+            callback, bot, await render_points(callback.from_user.id, lang)
+        )
 
     @router.callback_query(F.data == "menu:checkin")
     async def callback_checkin(callback: CallbackQuery, bot: Bot) -> None:
         await callback.answer()
-        await ensure_callback_user(callback)
-        await answer_callback(callback, bot, await run_checkin(callback.from_user.id))
+        lang = await ensure_callback_user(callback)
+        await answer_callback(
+            callback, bot, await run_checkin(callback.from_user.id, lang)
+        )
 
     @router.callback_query(F.data == "menu:invite")
     async def callback_invite(callback: CallbackQuery, bot: Bot) -> None:
         await callback.answer()
-        await ensure_callback_user(callback)
+        lang = await ensure_callback_user(callback)
         await answer_callback(
-            callback, bot, await render_invite(callback.from_user.id, bot)
+            callback, bot, await render_invite(callback.from_user.id, bot, lang)
         )
 
     @router.callback_query(F.data == "menu:myinvites")
     async def callback_my_invites(callback: CallbackQuery, bot: Bot) -> None:
         await callback.answer()
-        await ensure_callback_user(callback)
+        lang = await ensure_callback_user(callback)
         await answer_callback(
-            callback, bot, await render_my_invites(callback.from_user.id)
+            callback, bot, await render_my_invites(callback.from_user.id, lang)
         )
 
     @router.callback_query(F.data == "menu:rank")
     async def callback_rank(callback: CallbackQuery, bot: Bot) -> None:
         await callback.answer()
-        await ensure_callback_user(callback)
-        await answer_callback(callback, bot, await render_rank())
+        lang = await ensure_callback_user(callback)
+        await answer_callback(callback, bot, await render_rank(lang))
 
     @router.callback_query(F.data == "menu:pointrank")
     async def callback_points_rank(callback: CallbackQuery, bot: Bot) -> None:
         await callback.answer()
+        lang = await ensure_callback_user(callback)
+        await answer_callback(callback, bot, await render_points_rank(lang))
+
+    @router.callback_query(F.data == "menu:start")
+    async def callback_start(callback: CallbackQuery, bot: Bot) -> None:
+        await callback.answer()
+        lang = await ensure_callback_user(callback)
+        await answer_callback(
+            callback,
+            bot,
+            await render_profile(callback.from_user.id),
+            reply_markup=main_menu(settings.join_buttons, lang),
+        )
+
+    @router.callback_query(F.data == "menu:language")
+    async def callback_language(callback: CallbackQuery, bot: Bot) -> None:
+        await callback.answer()
+        lang = await ensure_callback_user(callback)
+        await answer_callback(
+            callback,
+            bot,
+            (
+                "🌐 <b>Language</b>\n\nChoose the language for bot replies."
+                if is_english(lang)
+                else "🌐 <b>语言设置</b>\n\n请选择机器人回复语言。"
+            ),
+            reply_markup=language_menu(lang),
+        )
+
+    @router.callback_query(F.data.startswith("language:set:"))
+    async def callback_set_language(callback: CallbackQuery, bot: Bot) -> None:
         await ensure_callback_user(callback)
-        await answer_callback(callback, bot, await render_points_rank())
+        lang = normalize_language(str(callback.data).rsplit(":", maxsplit=1)[-1])
+        updated = await db.set_user_language(callback.from_user.id, lang)
+        if not updated:
+            await callback.answer("Please send /start first.", show_alert=True)
+            return
+        await callback.answer(
+            "Language updated." if is_english(lang) else "语言已切换。"
+        )
+        await answer_callback(
+            callback,
+            bot,
+            (
+                "✅ Language switched to English."
+                if is_english(lang)
+                else "✅ 已切换为中文。"
+            ),
+            reply_markup=main_menu(settings.join_buttons, lang),
+        )
 
     @router.callback_query(F.data == "menu:help")
     async def callback_help(callback: CallbackQuery, bot: Bot) -> None:
         await callback.answer()
-        await ensure_callback_user(callback)
+        lang = await ensure_callback_user(callback)
         await answer_callback(
             callback,
             bot,
-            help_message(settings.invite_reward, settings.checkin_reward),
+            help_message(settings.invite_reward, settings.checkin_reward, lang),
         )
 
     @router.callback_query(F.data == "menu:shop")
     async def callback_shop(callback: CallbackQuery, bot: Bot) -> None:
         await callback.answer()
-        await ensure_callback_user(callback)
-        await send_shop_callback(callback, bot)
+        lang = await ensure_callback_user(callback)
+        await send_shop_callback(callback, bot, lang)
 
     @router.callback_query(F.data == "menu:lottery")
     async def callback_lottery(callback: CallbackQuery, bot: Bot) -> None:
         await callback.answer()
-        await ensure_callback_user(callback)
-        await send_lottery_callback(callback, bot)
+        lang = await ensure_callback_user(callback)
+        await send_lottery_callback(callback, bot, lang)
 
     @router.callback_query(F.data == "menu:mycards")
     async def callback_my_cards(callback: CallbackQuery, bot: Bot) -> None:
         await callback.answer()
-        await ensure_callback_user(callback)
+        lang = await ensure_callback_user(callback)
         await answer_callback(
             callback,
             bot,
-            await render_my_cards(callback.from_user.id),
+            await render_my_cards(callback.from_user.id, lang),
             protect_content=True,
         )
 
     @router.callback_query(F.data.startswith("shop:view:"))
     async def callback_product(callback: CallbackQuery, bot: Bot) -> None:
         await callback.answer()
-        await ensure_callback_user(callback)
+        lang = await ensure_callback_user(callback)
         try:
             product_id = int(str(callback.data).rsplit(":", maxsplit=1)[1])
         except (ValueError, IndexError):
-            await answer_callback(callback, bot, "⚠️ 商品参数无效，请重新打开商城。")
+            await answer_callback(
+                callback,
+                bot,
+                (
+                    "⚠️ Invalid product parameters. Please reopen the shop."
+                    if is_english(lang)
+                    else "⚠️ 商品参数无效，请重新打开商城。"
+                ),
+            )
             return
         product = await db.get_product(product_id)
         if not product or not product["is_active"]:
-            await answer_callback(callback, bot, "⚠️ 商品不存在或已经下架。")
+            await answer_callback(
+                callback,
+                bot,
+                (
+                    "⚠️ Product not found or inactive."
+                    if is_english(lang)
+                    else "⚠️ 商品不存在或已经下架。"
+                ),
+            )
             return
         stock = int(product["stock"] or 0)
-        description = str(product["description"] or "暂无说明")
+        description = str(
+            product["description"] or ("No description." if is_english(lang) else "暂无说明")
+        )
         intent_token = ""
         if stock > 0:
             intent_token = await db.create_redemption_intent(
@@ -1130,49 +1540,102 @@ def build_router(settings: Settings, db: Database) -> Router:
                 product_id,
                 settings.redemption_intent_ttl_seconds,
             )
+        if is_english(lang):
+            product_text = (
+                "🛒 <b>Product Details</b>\n\n"
+                f"Name: <b>{escape(str(product['name']))}</b>\n"
+                f"Price: <b>{int(product['points_cost'])}</b> points\n"
+                f"Stock: <b>{stock}</b>\n"
+                f"Description: {escape(description)}"
+            )
+        else:
+            product_text = (
+                "🛒 <b>商品详情</b>\n\n"
+                f"名称：<b>{escape(str(product['name']))}</b>\n"
+                f"价格：<b>{int(product['points_cost'])}</b> 积分\n"
+                f"库存：<b>{stock}</b>\n"
+                f"说明：{escape(description)}"
+            )
         await answer_callback(
             callback,
             bot,
-            "🛒 <b>商品详情</b>\n\n"
-            f"名称：<b>{escape(str(product['name']))}</b>\n"
-            f"价格：<b>{int(product['points_cost'])}</b> 积分\n"
-            f"库存：<b>{stock}</b>\n"
-            f"说明：{escape(description)}",
-            reply_markup=product_menu(intent_token, has_stock=stock > 0),
+            product_text,
+            reply_markup=product_menu(intent_token, has_stock=stock > 0, lang=lang),
         )
 
     @router.callback_query(F.data.startswith("shop:confirm:"))
     async def callback_redeem(callback: CallbackQuery, bot: Bot) -> None:
-        await callback.answer("正在兑换…")
-        await ensure_callback_user(callback)
+        lang = await ensure_callback_user(callback)
+        await callback.answer("Redeeming..." if is_english(lang) else "正在兑换…")
         intent_token = str(callback.data).removeprefix("shop:confirm:").strip()
         if not intent_token or len(intent_token) > 40:
-            await answer_callback(callback, bot, "⚠️ 商品参数无效。")
+            await answer_callback(
+                callback,
+                bot,
+                "⚠️ Invalid product parameters." if is_english(lang) else "⚠️ 商品参数无效。",
+            )
             return
         outcome = await db.redeem_card(callback.from_user.id, intent_token)
         if outcome.status in {"invalid_intent", "expired_intent"}:
-            text = "⚠️ 兑换确认已失效，请重新打开商城选择商品。"
+            text = (
+                "⚠️ Redemption confirmation expired. Please reopen the shop and choose again."
+                if is_english(lang)
+                else "⚠️ 兑换确认已失效，请重新打开商城选择商品。"
+            )
         elif outcome.status == "not_found":
-            text = "⚠️ 商品不存在或已经下架。"
+            text = (
+                "⚠️ Product not found or inactive."
+                if is_english(lang)
+                else "⚠️ 商品不存在或已经下架。"
+            )
         elif outcome.status == "out_of_stock":
-            text = "😔 商品刚刚售罄，积分没有扣除。"
+            text = (
+                "😔 The product just sold out. No points were deducted."
+                if is_english(lang)
+                else "😔 商品刚刚售罄，积分没有扣除。"
+            )
         elif outcome.status == "insufficient_points":
             text = (
-                f"❌ 积分不足，需要 <b>{outcome.cost}</b> 积分，"
-                f"您当前有 <b>{outcome.points}</b> 积分。"
+                (
+                    f"❌ Not enough points. Requires <b>{outcome.cost}</b> points; "
+                    f"you currently have <b>{outcome.points}</b> points."
+                )
+                if is_english(lang)
+                else (
+                    f"❌ 积分不足，需要 <b>{outcome.cost}</b> 积分，"
+                    f"您当前有 <b>{outcome.points}</b> 积分。"
+                )
             )
         elif outcome.status in {"ok", "already_redeemed"}:
             title = (
-                "✅ <b>兑换成功</b>"
+                (
+                    "✅ <b>Redeemed successfully</b>"
+                    if is_english(lang)
+                    else "✅ <b>兑换成功</b>"
+                )
                 if outcome.status == "ok"
-                else "ℹ️ <b>该兑换已处理，未重复扣分</b>"
+                else (
+                    "ℹ️ <b>This redemption was already processed. No duplicate charge.</b>"
+                    if is_english(lang)
+                    else "ℹ️ <b>该兑换已处理，未重复扣分</b>"
+                )
             )
             text = (
-                f"{title}\n\n"
-                f"商品：{escape(outcome.product_name)}\n"
-                f"卡密：<code>{escape(outcome.code)}</code>\n"
-                f"剩余积分：<b>{outcome.points}</b>\n\n"
-                "请妥善保存；如发送中断，可使用 /mycards 找回。"
+                (
+                    f"{title}\n\n"
+                    f"Product: {escape(outcome.product_name)}\n"
+                    f"Card code: <code>{escape(outcome.code)}</code>\n"
+                    f"Remaining points: <b>{outcome.points}</b>\n\n"
+                    "Keep it safe. If delivery is interrupted, use /mycards to recover it."
+                )
+                if is_english(lang)
+                else (
+                    f"{title}\n\n"
+                    f"商品：{escape(outcome.product_name)}\n"
+                    f"卡密：<code>{escape(outcome.code)}</code>\n"
+                    f"剩余积分：<b>{outcome.points}</b>\n\n"
+                    "请妥善保存；如发送中断，可使用 /mycards 找回。"
+                )
             )
             try:
                 await answer_callback(callback, bot, text, protect_content=True)
@@ -1183,14 +1646,18 @@ def build_router(settings: Settings, db: Database) -> Router:
                 )
             return
         else:
-            text = "⚠️ 兑换失败，请稍后重试。"
+            text = (
+                "⚠️ Redemption failed. Please try again later."
+                if is_english(lang)
+                else "⚠️ 兑换失败，请稍后重试。"
+            )
         await answer_callback(callback, bot, text)
 
     @router.callback_query(F.data == "lottery:draw")
     async def callback_lottery_draw(callback: CallbackQuery, bot: Bot) -> None:
-        await callback.answer("正在抽奖…")
-        await ensure_callback_user(callback)
-        text, protect_content = await run_lottery_draw(callback.from_user.id)
+        lang = await ensure_callback_user(callback)
+        await callback.answer("Drawing..." if is_english(lang) else "正在抽奖…")
+        text, protect_content = await run_lottery_draw(callback.from_user.id, lang)
         try:
             await answer_callback(callback, bot, text, protect_content=protect_content)
         except TelegramAPIError:
@@ -1460,16 +1927,33 @@ def build_router(settings: Settings, db: Database) -> Router:
 
     @router.message(F.text.startswith("/"))
     async def unknown_command(message: Message) -> None:
-        await message.answer("未知命令。发送 /help 查看使用说明。")
+        lang = await ensure_message_user(message)
+        await message.answer(
+            "Unknown command. Send /help for instructions."
+            if is_english(lang)
+            else "未知命令。发送 /help 查看使用说明。"
+        )
 
     @router.callback_query()
     async def unknown_callback(callback: CallbackQuery) -> None:
-        await callback.answer("按钮已失效，请发送 /start 刷新菜单。", show_alert=True)
+        lang = await db.get_user_language(callback.from_user.id)
+        await callback.answer(
+            "This button has expired. Send /start to refresh the menu."
+            if is_english(lang)
+            else "按钮已失效，请发送 /start 刷新菜单。",
+            show_alert=True,
+        )
 
     @root_router.callback_query(F.message.chat.type != ChatType.PRIVATE)
     async def reject_group_callback(callback: CallbackQuery) -> None:
+        lang = await db.get_user_language(callback.from_user.id)
         await callback.answer(
-            "为保护个人信息和卡密，请私聊机器人操作。", show_alert=True
+            (
+                "For personal info and card-code safety, please use the bot in private chat."
+                if is_english(lang)
+                else "为保护个人信息和卡密，请私聊机器人操作。"
+            ),
+            show_alert=True,
         )
 
     root_router.include_router(router)

@@ -86,6 +86,8 @@ REQUIRED_CHAT_NAMES=通知频道,交流群
 
 普通群成员的快捷指令菜单只显示 `/checkin` 和 `/pointrank`；群管理员会额外看到 `/grouplottery`、`/lotteries` 和 `/drawlottery`。实际执行仍以 `.env` 的 `ADMIN_IDS` 为准，不是群管理员就一定能操作。
 
+用户可以在私聊中发送 `/language` 或 `/lang`，也可以点击主菜单里的“语言切换 / Language”按钮，在中文和 English 之间切换。语言偏好会随用户账号保存在数据库中；切换后个人中心、积分、签到、商城、个人抽奖、排行榜和群抽奖常用提示会按该用户偏好显示。
+
 ## 4. 新人进群人机验证
 
 默认关闭。需要启用时，在 `.env` 里配置：

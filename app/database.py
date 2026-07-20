@@ -10,6 +10,8 @@ from typing import AsyncIterator, Iterable
 
 import aiosqlite
 
+from app.i18n import DEFAULT_LANGUAGE, Language, normalize_language
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -123,6 +125,7 @@ class Database:
                     first_name TEXT NOT NULL DEFAULT '',
                     points INTEGER NOT NULL DEFAULT 0 CHECK(points >= 0),
                     is_verified INTEGER NOT NULL DEFAULT 0,
+                    language TEXT NOT NULL DEFAULT 'zh',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -351,6 +354,13 @@ class Database:
             )
             await self._ensure_columns(
                 db,
+                "users",
+                {
+                    "language": "TEXT NOT NULL DEFAULT 'zh'",
+                },
+            )
+            await self._ensure_columns(
+                db,
                 "group_lotteries",
                 {
                     "trigger_text": "TEXT NOT NULL DEFAULT ''",
@@ -440,6 +450,32 @@ class Database:
             return await (
                 await db.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
             ).fetchone()
+
+    async def get_user_language(self, user_id: int) -> Language:
+        async with self.connection() as db:
+            row = await (
+                await db.execute(
+                    "SELECT language FROM users WHERE user_id = ?", (user_id,)
+                )
+            ).fetchone()
+        if not row:
+            return DEFAULT_LANGUAGE
+        return normalize_language(row["language"])
+
+    async def set_user_language(self, user_id: int, language: str) -> bool:
+        normalized = normalize_language(language)
+        now = utc_now()
+        async with self.connection() as db:
+            cursor = await db.execute(
+                """
+                UPDATE users
+                SET language = ?, updated_at = ?
+                WHERE user_id = ?
+                """,
+                (normalized, now, user_id),
+            )
+            await db.commit()
+            return cursor.rowcount == 1
 
     async def get_invite_counts(self, user_id: int) -> tuple[int, int]:
         async with self.connection() as db:

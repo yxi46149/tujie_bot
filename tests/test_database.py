@@ -55,6 +55,18 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(next_day.claimed)
         self.assertEqual(next_day.points, 2)
 
+    async def test_user_language_defaults_and_can_be_updated(self) -> None:
+        await self.db.register_user(100, "alice", "用户")
+
+        self.assertEqual(await self.db.get_user_language(100), "zh")
+        self.assertTrue(await self.db.set_user_language(100, "en"))
+        await self.db.register_user(100, "alice_new", "用户新")
+        user = await self.db.get_user(100)
+
+        self.assertEqual(await self.db.get_user_language(100), "en")
+        self.assertEqual(user["username"], "alice_new")
+        self.assertFalse(await self.db.set_user_language(999, "en"))
+
     async def test_card_redemption_is_atomic_and_decrements_stock(self) -> None:
         await self.db.register_user(100, None, "用户")
         await self.db.adjust_points(100, 20)
@@ -508,6 +520,7 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(user["username"], "legacy")
         self.assertEqual(user["points"], 42)
+        self.assertEqual(user["language"], "zh")
         self.assertIsNotNone(intent_table)
         self.assertEqual(await upgraded.quick_check(), "ok")
 
