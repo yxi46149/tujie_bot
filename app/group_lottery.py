@@ -14,6 +14,7 @@ from aiogram.exceptions import (
 )
 
 from app.database import Database, GroupLotteryDrawOutcome, utc_now
+from app.privacy import masked_user_link
 
 
 logger = logging.getLogger(__name__)
@@ -144,9 +145,7 @@ def normalize_draw_mode(value: str) -> str | None:
 
 
 def display_user(user_id: int, username: str | None, first_name: str | None) -> str:
-    if username:
-        return f"@{escape(username)}"
-    return f'<a href="tg://user?id={user_id}">{escape(first_name or "用户")}</a>'
+    return masked_user_link(user_id, username, first_name)
 
 
 def prize_label(prize_type: str, prize_value: int, product_name: str = "") -> str:

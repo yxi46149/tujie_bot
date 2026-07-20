@@ -83,6 +83,11 @@ class HandlerSafetyTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(len(router.message.handlers), 1)
         self.assertGreaterEqual(len(router.callback_query.handlers), 1)
         self.assertGreaterEqual(len(router.chat_member.handlers), 1)
+        root_message_handlers = {
+            handler.callback.__name__ for handler in router.message.handlers
+        }
+        self.assertIn("command_group_checkin", root_message_handlers)
+        self.assertIn("reject_group_add_cards", root_message_handlers)
 
         dispatcher = Dispatcher()
         dispatcher.include_router(router)
@@ -120,6 +125,39 @@ class HandlerSafetyTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("command_points_rank", root_message_handlers)
         self.assertNotIn("command_points_rank", private_message_handlers)
+
+    def test_checkin_command_is_available_from_root_router(self) -> None:
+        settings = Settings(
+            bot_token="123456:dummy-token",
+            admin_ids=frozenset(),
+            required_chat_ids=(),
+            required_join_urls=(),
+            required_chat_names=(),
+            invite_reward=5,
+            invite_daily_reward_limit=20,
+            checkin_reward=1,
+            lottery_cost=5,
+            verify_cooldown_seconds=15,
+            verify_max_concurrency=5,
+            redemption_intent_ttl_seconds=600,
+            human_verify_enabled=False,
+            human_verify_chat_ids=(),
+            human_verify_timeout_seconds=300,
+            timezone_name="Asia/Shanghai",
+            database_path=Path("unused.db"),
+        )
+
+        router = build_router(settings, Database(settings.database_path))
+        root_message_handlers = {
+            handler.callback.__name__ for handler in router.message.handlers
+        }
+        private_message_handlers = {
+            handler.callback.__name__
+            for handler in router.sub_routers[0].message.handlers
+        }
+
+        self.assertIn("command_group_checkin", root_message_handlers)
+        self.assertIn("command_checkin", private_message_handlers)
 
 
 if __name__ == "__main__":

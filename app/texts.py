@@ -3,6 +3,8 @@ from __future__ import annotations
 from html import escape
 from typing import Sequence
 
+from app.privacy import masked_public_name
+
 
 def profile(user_id: int, points: int, invite_reward: int) -> str:
     return (
@@ -102,8 +104,8 @@ def points_rank_message(rows: Sequence[object]) -> str:
     lines = ["💎 <b>积分排行榜</b>", ""]
     for index, row in enumerate(rows, start=1):
         username = row["username"]  # type: ignore[index]
-        first_name = str(row["first_name"] or "用户")  # type: ignore[index]
-        display = f"@{username}" if username else first_name
+        first_name = row["first_name"]  # type: ignore[index]
+        display = masked_public_name(username, first_name)
         prefix = medals[index - 1] if index <= 3 else f"{index}."
         lines.append(
             f"{prefix} {escape(display)} — <b>{int(row['points'])}</b> 积分"  # type: ignore[index]

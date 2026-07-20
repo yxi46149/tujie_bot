@@ -40,6 +40,7 @@ from app.group_lottery import (
     participation_message,
 )
 from app.keyboards import lottery_menu, main_menu, product_menu, shop_menu
+from app.privacy import masked_user_link
 from app.texts import (
     help_message,
     invite_message,
@@ -288,12 +289,11 @@ def build_router(settings: Settings, db: Database) -> Router:
                 ]
             ]
         )
-        display_name = escape(member.full_name or member.first_name or "新成员")
         timeout_minutes = max(1, ceil(settings.human_verify_timeout_seconds / 60))
         try:
             await bot.send_message(
                 chat_id,
-                f'<a href="tg://user?id={member.id}">{display_name}</a> '
+                f"{masked_user_link(member.id, member.username, member.first_name)} "
                 f"欢迎入群，请在 <b>{timeout_minutes}</b> 分钟内完成验证。\n\n"
                 f"请回答：<b>{escape(challenge.question)}</b> = ?\n"
                 "选择正确答案后会自动解除发言限制。",
@@ -388,14 +388,19 @@ def build_router(settings: Settings, db: Database) -> Router:
             return True
         return bool(prize["product_is_active"]) and int(prize["stock"] or 0) > 0  # type: ignore[index]
 
-    async def run_checkin(user_id: int) -> str:
+    async def run_checkin(user_id: int, *, include_points: bool = True) -> str:
         local_date = datetime.now(settings.timezone).date().isoformat()
         outcome = await db.claim_checkin(user_id, local_date, settings.checkin_reward)
+        points_hint = "💬 当前积分请私聊机器人发送 /points 查看。"
         if outcome.claimed:
+            if not include_points:
+                return f"✅ 签到成功！+{settings.checkin_reward} 积分\n{points_hint}"
             return (
                 f"✅ 签到成功！+{settings.checkin_reward} 积分\n"
                 f"💰 当前积分：<b>{outcome.points}</b>"
             )
+        if not include_points:
+            return f"ℹ️ 今天已经签到过了，请明天再来。\n{points_hint}"
         return f"ℹ️ 今天已经签到过了，请明天再来。\n💰 当前积分：<b>{outcome.points}</b>"
 
     async def render_lottery(user_id: int) -> tuple[str, bool]:
@@ -898,6 +903,33 @@ def build_router(settings: Settings, db: Database) -> Router:
         }:
             return
         await message.answer(await render_points_rank())
+
+    @root_router.message(F.chat.type != ChatType.PRIVATE, Command("checkin"))
+    async def command_group_checkin(message: Message) -> None:
+        if not message.from_user or not is_group_chat(message):
+            return
+        await ensure_message_user(message)
+        await message.reply(await run_checkin(message.from_user.id, include_points=False))
+
+    @root_router.message(F.chat.type != ChatType.PRIVATE, Command("addcards"))
+    async def reject_group_add_cards(message: Message, bot: Bot) -> None:
+        try:
+            await message.delete()
+        except TelegramAPIError:
+            await message.reply(
+                "⚠️ 卡密导入只能私聊机器人。当前消息可能包含卡密，"
+                "机器人未能自动删除，请管理员立即手动删除。"
+            )
+            logger.warning(
+                "群聊中出现 /addcards 且无法自动删除，chat_id=%s message_id=%s",
+                message.chat.id,
+                message.message_id,
+            )
+            return
+        await bot.send_message(
+            message.chat.id,
+            "⚠️ 卡密导入只能私聊机器人。已删除群内 /addcards 消息。",
+        )
 
     @root_router.message(F.chat.type != ChatType.PRIVATE, F.text)
     async def group_lottery_phrase(message: Message, bot: Bot) -> None:

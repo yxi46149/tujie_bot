@@ -89,11 +89,11 @@ python -m app.main
 | `/verify` | 检查指定群/频道成员身份 |
 | `/invite` | 生成 `?start=ref_用户ID` 专属链接 |
 | `/myinvites` | 邀请记录与结算状态 |
-| `/checkin` | 每日签到 |
+| `/checkin` | 每日签到，私聊和群聊均可调用；群聊不展示当前积分 |
 | `/shop` | 积分商城 |
 | `/lottery` | 积分抽奖 |
 | `/mycards` | 找回最近兑换的卡密 |
-| `/pointrank` | 积分排行榜，私聊和群聊均可调用 |
+| `/pointrank` | 积分排行榜，私聊和群聊均可调用，用户名脱敏显示 |
 | `/rank` | 已验证邀请排行榜 |
 | `/help` | 使用说明 |
 
@@ -139,7 +139,7 @@ CODE-003
 
 重复卡密会自动忽略。兑换在 SQLite `BEGIN IMMEDIATE` 事务中完成，可防止并发重复发放同一条卡密。
 
-Telegram 导入成功后，机器人会尽力删除包含卡密的原消息。更推荐使用本地导入，卡密不会经过 Telegram：
+Telegram 导入请只在与机器人的私聊中操作。导入成功后，机器人会尽力删除包含卡密的原消息；如果误发到群里，机器人会尝试立即删除并提醒。更推荐使用本地导入，卡密不会经过 Telegram：
 
 ```powershell
 python -m scripts.import_cards 1 .\codes.txt
