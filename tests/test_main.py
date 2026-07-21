@@ -8,10 +8,12 @@ from aiogram.types import (
     BotCommandScopeAllChatAdministrators,
     BotCommandScopeAllGroupChats,
     BotCommandScopeAllPrivateChats,
+    BotCommandScopeChat,
     BotCommandScopeDefault,
 )
 
 from app.main import (
+    admin_private_commands,
     group_admin_commands,
     group_commands,
     private_commands,
@@ -40,11 +42,48 @@ class CommandMenuTests(unittest.IsolatedAsyncioTestCase):
     def test_private_command_menu_keeps_full_user_commands(self) -> None:
         commands = [command.command for command in private_commands()]
 
-        self.assertIn("start", commands)
-        self.assertIn("language", commands)
-        self.assertIn("shop", commands)
-        self.assertIn("lottery", commands)
-        self.assertIn("grouplottery", commands)
+        self.assertEqual(
+            commands,
+            [
+                "start",
+                "points",
+                "verify",
+                "invite",
+                "myinvites",
+                "checkin",
+                "shop",
+                "lottery",
+                "mycards",
+                "pointrank",
+                "rank",
+                "language",
+                "lang",
+                "help",
+            ],
+        )
+        self.assertNotIn("grouplottery", commands)
+        self.assertNotIn("lotteries", commands)
+        self.assertNotIn("drawlottery", commands)
+        self.assertNotIn("addproduct", commands)
+        self.assertNotIn("addcards", commands)
+
+    def test_admin_private_command_menu_adds_inventory_commands(self) -> None:
+        commands = [command.command for command in admin_private_commands()]
+
+        self.assertIn("lang", commands)
+        self.assertIn("admin", commands)
+        self.assertIn("stats", commands)
+        self.assertIn("products", commands)
+        self.assertIn("addproduct", commands)
+        self.assertIn("addcards", commands)
+        self.assertIn("toggleproduct", commands)
+        self.assertIn("lotteryprizes", commands)
+        self.assertIn("addlotteryprize", commands)
+        self.assertIn("togglelotteryprize", commands)
+        self.assertIn("addpoints", commands)
+        self.assertNotIn("grouplottery", commands)
+        self.assertNotIn("lotteries", commands)
+        self.assertNotIn("drawlottery", commands)
 
     async def test_set_commands_registers_private_and_group_scopes(self) -> None:
         bot = SimpleNamespace(set_my_commands=AsyncMock())
@@ -78,6 +117,20 @@ class CommandMenuTests(unittest.IsolatedAsyncioTestCase):
             [command.description for command in calls[6].args[0]],
             ["Daily check-in", "Points ranking"],
         )
+
+    async def test_set_commands_registers_admin_private_scopes(self) -> None:
+        bot = SimpleNamespace(set_my_commands=AsyncMock())
+
+        await set_commands(bot, frozenset({1001}))
+
+        self.assertEqual(bot.set_my_commands.await_count, 10)
+        calls = bot.set_my_commands.await_args_list
+        self.assertIsInstance(calls[4].kwargs["scope"], BotCommandScopeChat)
+        self.assertEqual(calls[4].kwargs["scope"].chat_id, 1001)
+        self.assertIsNone(calls[4].kwargs["language_code"])
+        self.assertIsInstance(calls[9].kwargs["scope"], BotCommandScopeChat)
+        self.assertEqual(calls[9].kwargs["language_code"], "en")
+        self.assertIn("addcards", [command.command for command in calls[4].args[0]])
 
 
 if __name__ == "__main__":

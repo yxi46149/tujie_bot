@@ -12,6 +12,7 @@ from aiogram.types import (
     BotCommandScopeAllChatAdministrators,
     BotCommandScopeAllGroupChats,
     BotCommandScopeAllPrivateChats,
+    BotCommandScopeChat,
     BotCommandScopeDefault,
 )
 
@@ -37,10 +38,8 @@ def private_commands(lang: Language = DEFAULT_LANGUAGE) -> list[BotCommand]:
             BotCommand(command="pointrank", description="Points ranking"),
             BotCommand(command="rank", description="Invite ranking"),
             BotCommand(command="language", description="Switch language"),
+            BotCommand(command="lang", description="Switch language"),
             BotCommand(command="help", description="Help"),
-            BotCommand(command="grouplottery", description="Start group lottery"),
-            BotCommand(command="lotteries", description="View group lotteries"),
-            BotCommand(command="drawlottery", description="Draw group lottery"),
         ]
     return [
         BotCommand(command="start", description="打开个人中心"),
@@ -55,10 +54,8 @@ def private_commands(lang: Language = DEFAULT_LANGUAGE) -> list[BotCommand]:
         BotCommand(command="pointrank", description="积分排行榜"),
         BotCommand(command="rank", description="邀请排行榜"),
         BotCommand(command="language", description="切换语言"),
+        BotCommand(command="lang", description="切换语言"),
         BotCommand(command="help", description="使用说明"),
-        BotCommand(command="grouplottery", description="管理员发起群抽奖"),
-        BotCommand(command="lotteries", description="管理员查看群抽奖"),
-        BotCommand(command="drawlottery", description="管理员群抽奖开奖"),
     ]
 
 
@@ -71,6 +68,36 @@ def group_commands(lang: Language = DEFAULT_LANGUAGE) -> list[BotCommand]:
     return [
         BotCommand(command="checkin", description="每日签到"),
         BotCommand(command="pointrank", description="积分排行榜"),
+    ]
+
+
+def admin_private_commands(lang: Language = DEFAULT_LANGUAGE) -> list[BotCommand]:
+    if is_english(lang):
+        return [
+            *private_commands(lang),
+            BotCommand(command="admin", description="Admin command list"),
+            BotCommand(command="stats", description="View bot stats"),
+            BotCommand(command="products", description="Products and stock"),
+            BotCommand(command="addproduct", description="Create product"),
+            BotCommand(command="addcards", description="Add product stock"),
+            BotCommand(command="toggleproduct", description="Enable or disable product"),
+            BotCommand(command="lotteryprizes", description="Lottery prize pool"),
+            BotCommand(command="addlotteryprize", description="Add lottery prize"),
+            BotCommand(command="togglelotteryprize", description="Enable or disable prize"),
+            BotCommand(command="addpoints", description="Adjust user points"),
+        ]
+    return [
+        *private_commands(lang),
+        BotCommand(command="admin", description="管理员命令"),
+        BotCommand(command="stats", description="机器人统计"),
+        BotCommand(command="products", description="商品与库存"),
+        BotCommand(command="addproduct", description="新增商品"),
+        BotCommand(command="addcards", description="新增商品库存"),
+        BotCommand(command="toggleproduct", description="上架或下架商品"),
+        BotCommand(command="lotteryprizes", description="抽奖奖池"),
+        BotCommand(command="addlotteryprize", description="新增抽奖奖品"),
+        BotCommand(command="togglelotteryprize", description="开关抽奖奖品"),
+        BotCommand(command="addpoints", description="调整用户积分"),
     ]
 
 
@@ -90,7 +117,7 @@ def group_admin_commands(lang: Language = DEFAULT_LANGUAGE) -> list[BotCommand]:
     ]
 
 
-async def set_commands(bot: Bot) -> None:
+async def set_commands(bot: Bot, admin_ids: frozenset[int] = frozenset()) -> None:
     for lang, language_code in (("zh", None), ("en", "en")):
         commands = private_commands(lang)
         await bot.set_my_commands(
@@ -113,6 +140,13 @@ async def set_commands(bot: Bot) -> None:
             scope=BotCommandScopeAllChatAdministrators(),
             language_code=language_code,
         )
+        admin_commands = admin_private_commands(lang)
+        for admin_id in admin_ids:
+            await bot.set_my_commands(
+                admin_commands,
+                scope=BotCommandScopeChat(chat_id=admin_id),
+                language_code=language_code,
+            )
 
 
 async def main() -> None:
@@ -135,7 +169,7 @@ async def main() -> None:
     )
 
     try:
-        await set_commands(bot)
+        await set_commands(bot, settings.admin_ids)
         logging.getLogger(__name__).info(
             "机器人已启动，数据库：%s", settings.database_path
         )

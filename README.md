@@ -100,7 +100,9 @@ python -m app.main
 | `/language` `/lang` | 切换中文/English |
 | `/help` | 使用说明 |
 
-普通群成员的快捷指令菜单只显示 `/checkin` 和 `/pointrank`；群管理员会额外看到 `/grouplottery`、`/lotteries` 和 `/drawlottery`。实际执行仍以 `.env` 的 `ADMIN_IDS` 为准。
+普通用户私聊快捷指令只显示个人可用命令；普通群成员的快捷指令菜单只显示 `/checkin` 和 `/pointrank`；群管理员会额外看到 `/grouplottery`、`/lotteries` 和 `/drawlottery`。实际执行仍以 `.env` 的 `ADMIN_IDS` 为准。
+
+`.env` 中 `ADMIN_IDS` 里的管理员在私聊机器人时，会额外看到 `/admin`、`/products`、`/addproduct`、`/addcards`、`/toggleproduct`、`/lotteryprizes`、`/addlotteryprize`、`/togglelotteryprize`、`/addpoints` 等快捷指令。
 
 语言切换在私聊中使用 `/language` 或主菜单的“语言切换 / Language”按钮；切换后个人中心、积分、签到、商城、个人抽奖、排行榜和群抽奖常用提示会按该用户偏好显示。
 
@@ -122,6 +124,7 @@ python -m app.main
 /stats
 /products
 /addproduct 10 测试卡密
+/addcards 1
 /toggleproduct 1
 /lotteryprizes
 /addlotteryprize 60 none 谢谢参与

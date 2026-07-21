@@ -86,7 +86,9 @@ REQUIRED_CHAT_NAMES=通知频道,交流群
 
 群成员可以直接在群里发送 `/checkin` 完成每日签到；群聊回复会提示本次签到结果和当前总积分。
 
-普通群成员的快捷指令菜单只显示 `/checkin` 和 `/pointrank`；群管理员会额外看到 `/grouplottery`、`/lotteries` 和 `/drawlottery`。实际执行仍以 `.env` 的 `ADMIN_IDS` 为准，不是群管理员就一定能操作。
+普通用户私聊快捷指令只显示个人可用命令；普通群成员的快捷指令菜单只显示 `/checkin` 和 `/pointrank`；群管理员会额外看到 `/grouplottery`、`/lotteries` 和 `/drawlottery`。实际执行仍以 `.env` 的 `ADMIN_IDS` 为准，不是群管理员就一定能操作。
+
+`.env` 中 `ADMIN_IDS` 里的管理员在私聊机器人时，会额外看到 `/admin`、`/products`、`/addproduct`、`/addcards`、`/toggleproduct`、`/lotteryprizes`、`/addlotteryprize`、`/togglelotteryprize`、`/addpoints` 等快捷指令。点击 `/addproduct` 或 `/addcards` 后，如果没有带参数，机器人会回复对应用法。
 
 用户可以在私聊中发送 `/language` 或 `/lang`，也可以点击主菜单里的“语言切换 / Language”按钮，在中文和 English 之间切换。语言偏好会随用户账号保存在数据库中；切换后个人中心、积分、签到、商城、个人抽奖、排行榜和群抽奖常用提示会按该用户偏好显示。
 
