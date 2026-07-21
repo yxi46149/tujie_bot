@@ -59,6 +59,7 @@ from app.texts import (
     points_rank_message,
     profile,
     rank_message,
+    stock_added_message,
 )
 
 
@@ -531,6 +532,18 @@ def build_router(settings: Settings, db: Database) -> Router:
         verified, pending = await db.get_invite_counts(user_id)
         rows = await db.get_recent_invites(user_id)
         return invites_message(verified, pending, rows, lang)
+
+    async def notify_stock_added(
+        bot: Bot, product_name: str, inserted_count: int
+    ) -> None:
+        if inserted_count <= 0:
+            return
+        text = stock_added_message(product_name, inserted_count)
+        for chat_id in settings.stock_notify_chat_ids:
+            try:
+                await bot.send_message(chat_id, text)
+            except TelegramAPIError:
+                logger.exception("商品库存群通知发送失败，chat_id=%s", chat_id)
 
     async def render_my_cards(user_id: int, lang: Language) -> str:
         return my_cards_message(await db.get_user_redemptions(user_id), lang)
@@ -1982,10 +1995,13 @@ def build_router(settings: Settings, db: Database) -> Router:
                 message.chat.id, "❌ 商品不存在。" + deletion_warning
             )
         else:
+            product = await db.get_product(int(first_line[0]))
+            product_name = str(product["name"]) if product else f"商品 {first_line[0]}"
             await bot.send_message(
                 message.chat.id,
                 f"✅ 成功导入 <b>{inserted}</b> 条新卡密。" + deletion_warning,
             )
+            await notify_stock_added(bot, product_name, inserted)
 
     @router.message(Command("toggleproduct"))
     async def command_toggle_product(message: Message, command: CommandObject) -> None:

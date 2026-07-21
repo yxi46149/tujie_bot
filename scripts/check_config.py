@@ -48,6 +48,7 @@ async def run() -> int:
         f"目标群 {len(settings.human_verify_chat_ids) or '全部'}，"
         f"超时 {settings.human_verify_timeout_seconds} 秒"
     )
+    print(f"[通过] 库存通知目标：{len(settings.stock_notify_chat_ids)} 个")
     print(f"[通过] 时区：{settings.timezone_name}")
     print(f"[通过] 数据库：{settings.database_path}")
     print(

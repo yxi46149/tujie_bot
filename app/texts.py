@@ -145,6 +145,10 @@ def invite_copy_text(link: str, lang: Language = DEFAULT_LANGUAGE) -> str:
     return f"{link}\n签到即可领取codex接码CDK"
 
 
+def stock_added_message(product_name: str, count: int) -> str:
+    return f"📦 管理员新增 <b>{escape(product_name)}</b> 商品库存 <b>{count}</b> 个。"
+
+
 def invites_message(
     verified: int,
     pending: int,

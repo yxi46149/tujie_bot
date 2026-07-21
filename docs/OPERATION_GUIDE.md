@@ -48,6 +48,7 @@ LOTTERY_COST=5
 HUMAN_VERIFY_ENABLED=false
 HUMAN_VERIFY_CHAT_IDS=
 HUMAN_VERIFY_TIMEOUT_SECONDS=120
+STOCK_NOTIFY_CHAT_IDS=-1001234567890
 TIMEZONE=Asia/Shanghai
 DATABASE_PATH=data/bot.db
 ```
@@ -62,6 +63,7 @@ DATABASE_PATH=data/bot.db
 | `REQUIRED_JOIN_URLS` | 用户点击加入用的公开链接或私密邀请链接 |
 | `REQUIRED_CHAT_NAMES` | 按钮展示名称，数量要和 `REQUIRED_CHAT_IDS` 一致 |
 | `LOTTERY_COST` | 用户个人 `/lottery` 每抽一次消耗多少积分 |
+| `STOCK_NOTIFY_CHAT_IDS` | 管理员新增卡密库存后发送群通知的目标群/频道；为空表示不通知 |
 | `DATABASE_PATH` | 本地 SQLite 文件路径，测试环境可换成单独文件 |
 
 `REQUIRED_CHAT_IDS`、`REQUIRED_JOIN_URLS`、`REQUIRED_CHAT_NAMES` 必须一一对应。例如有一个频道和一个群：
@@ -148,6 +150,14 @@ CODE-003
 ```
 
 机器人会尽量删除原始卡密消息；如果误发到群里，机器人会尝试立即删除并提醒。重复卡密会自动忽略。
+
+如果 `.env` 配置了 `STOCK_NOTIFY_CHAT_IDS`，管理员通过 Telegram `/addcards` 成功新增库存后，机器人会向指定群/频道发送库存通知：
+
+```text
+📦 管理员新增 codex接码CDK 商品库存 20 个。
+```
+
+库存通知只包含商品名和新增数量，不包含任何卡密内容。重复卡密或空行导致实际新增数量为 0 时，不发送群通知。本地 `python -m scripts.import_cards ...` 导入不经过 Telegram，不会自动发送群通知。
 
 测试环境清空数据最简单的方法是停掉机器人后删除测试数据库：
 

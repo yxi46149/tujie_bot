@@ -91,6 +91,7 @@ class HandlerSafetyTests(unittest.IsolatedAsyncioTestCase):
             human_verify_enabled=False,
             human_verify_chat_ids=(),
             human_verify_timeout_seconds=300,
+            stock_notify_chat_ids=(),
             timezone_name="Asia/Shanghai",
             database_path=Path("unused.db"),
         )
@@ -128,6 +129,7 @@ class HandlerSafetyTests(unittest.IsolatedAsyncioTestCase):
             human_verify_enabled=False,
             human_verify_chat_ids=(),
             human_verify_timeout_seconds=300,
+            stock_notify_chat_ids=(),
             timezone_name="Asia/Shanghai",
             database_path=Path("unused.db"),
         )
@@ -161,6 +163,7 @@ class HandlerSafetyTests(unittest.IsolatedAsyncioTestCase):
             human_verify_enabled=False,
             human_verify_chat_ids=(),
             human_verify_timeout_seconds=300,
+            stock_notify_chat_ids=(),
             timezone_name="Asia/Shanghai",
             database_path=Path("unused.db"),
         )

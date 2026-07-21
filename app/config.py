@@ -69,6 +69,7 @@ class Settings:
     human_verify_enabled: bool
     human_verify_chat_ids: tuple[ChatId, ...]
     human_verify_timeout_seconds: int
+    stock_notify_chat_ids: tuple[ChatId, ...]
     timezone_name: str
     database_path: Path
 
@@ -118,6 +119,7 @@ class Settings:
         human_verify_timeout_seconds = int(
             os.getenv("HUMAN_VERIFY_TIMEOUT_SECONDS", "120")
         )
+        stock_notify_chat_ids = _parse_chat_ids(os.getenv("STOCK_NOTIFY_CHAT_IDS", ""))
         if (
             min(
                 invite_reward,
@@ -161,6 +163,7 @@ class Settings:
             human_verify_enabled=human_verify_enabled,
             human_verify_chat_ids=human_verify_chat_ids,
             human_verify_timeout_seconds=human_verify_timeout_seconds,
+            stock_notify_chat_ids=stock_notify_chat_ids,
             timezone_name=timezone_name,
             database_path=database_path,
         )

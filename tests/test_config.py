@@ -43,6 +43,7 @@ class SettingsTests(unittest.TestCase):
             "HUMAN_VERIFY_ENABLED": "true",
             "HUMAN_VERIFY_CHAT_IDS": "-100123,@groupname",
             "HUMAN_VERIFY_TIMEOUT_SECONDS": "120",
+            "STOCK_NOTIFY_CHAT_IDS": "-100456,@stock_group",
         }
         with patch.dict(os.environ, environment, clear=True):
             settings = Settings.from_env()
@@ -50,6 +51,7 @@ class SettingsTests(unittest.TestCase):
         self.assertTrue(settings.human_verify_enabled)
         self.assertEqual(settings.human_verify_chat_ids, (-100123, "@groupname"))
         self.assertEqual(settings.human_verify_timeout_seconds, 120)
+        self.assertEqual(settings.stock_notify_chat_ids, (-100456, "@stock_group"))
 
     def test_human_verify_timeout_defaults_to_two_minutes(self) -> None:
         environment = {

@@ -10,6 +10,19 @@ from aiogram.utils.token import TokenValidationError
 from app.config import Settings
 
 
+def can_receive_stock_notice(membership: object) -> bool:
+    status = getattr(membership, "status", None)
+    if status in {
+        ChatMemberStatus.ADMINISTRATOR,
+        ChatMemberStatus.CREATOR,
+        ChatMemberStatus.MEMBER,
+    }:
+        return True
+    return status == ChatMemberStatus.RESTRICTED and bool(
+        getattr(membership, "is_member", False)
+    )
+
+
 async def run() -> int:
     try:
         settings = Settings.from_env()
@@ -83,6 +96,20 @@ async def run() -> int:
                     f"[通过] 新人验证群：{chat.title or chat_id}，"
                     "机器人具备限制成员/移除成员/删除消息权限"
                 )
+
+        for chat_id in settings.stock_notify_chat_ids:
+            try:
+                chat = await bot.get_chat(chat_id)
+                membership = await bot.get_chat_member(chat_id, me.id)
+            except TelegramAPIError as exc:
+                errors.append(f"库存通知群（{chat_id}）无法访问：{exc}")
+                continue
+            if not can_receive_stock_notice(membership):
+                errors.append(
+                    f"库存通知群（{chat_id}）中机器人不是成员或无法发送消息。"
+                )
+                continue
+            print(f"[通过] 库存通知群：{chat.title or chat_id}，机器人可访问")
     finally:
         await bot.session.close()
 

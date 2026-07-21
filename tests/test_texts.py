@@ -10,6 +10,7 @@ from app.texts import (
     points_message,
     points_rank_message,
     profile,
+    stock_added_message,
 )
 
 
@@ -53,6 +54,14 @@ class TextFormattingTests(unittest.TestCase):
         self.assertIsNotNone(button.copy_text)
         assert button.copy_text is not None
         self.assertEqual(button.copy_text.text, copy_text)
+
+    def test_stock_added_message_escapes_product_name(self) -> None:
+        message = stock_added_message("codex<接码>", 8)
+
+        self.assertIn("管理员新增", message)
+        self.assertIn("codex&lt;接码&gt;", message)
+        self.assertIn("<b>8</b> 个", message)
+        self.assertNotIn("codex<接码>", message)
 
     def test_keyboards_support_language_switching(self) -> None:
         keyboard = main_menu((), "en")
