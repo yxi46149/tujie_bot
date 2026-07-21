@@ -40,6 +40,43 @@ class GroupLotteryParsingTests(unittest.TestCase):
         self.assertEqual(parsed.trigger_text, "我要 抽奖")
         self.assertEqual(parsed.title, "七夕 群福利卡密抽奖")
 
+    def test_parse_timed_product_lottery_with_entry_cost(self) -> None:
+        parsed = parse_group_lottery_command(
+            "product 1 5 time 10m cost 2 兔姐666 codex接码CDK"
+        )
+
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertEqual(parsed.prize_type, "product")
+        self.assertEqual(parsed.prize_value, 1)
+        self.assertEqual(parsed.winner_count, 5)
+        self.assertEqual(parsed.draw_mode, "time")
+        self.assertEqual(parsed.entry_cost, 2)
+        self.assertEqual(parsed.trigger_text, "兔姐666")
+        self.assertEqual(parsed.title, "codex接码CDK")
+
+    def test_parse_lottery_without_entry_cost_keeps_spaced_title(self) -> None:
+        parsed = parse_group_lottery_command(
+            "points 20 3 time 10m draw Group points giveaway"
+        )
+
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertEqual(parsed.entry_cost, 0)
+        self.assertEqual(parsed.trigger_text, "draw")
+        self.assertEqual(parsed.title, "Group points giveaway")
+
+    def test_parse_multiline_lottery_with_chinese_entry_cost_keyword(self) -> None:
+        parsed = parse_group_lottery_command(
+            "product 1 5 time 10m 报名费 2\n兔姐666\ncodex接码CDK"
+        )
+
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertEqual(parsed.entry_cost, 2)
+        self.assertEqual(parsed.trigger_text, "兔姐666")
+        self.assertEqual(parsed.title, "codex接码CDK")
+
     def test_rejects_count_lottery_when_target_is_less_than_winners(self) -> None:
         parsed = parse_group_lottery_command(
             "points 20 3 count 2 抽奖 群福利积分抽奖"
@@ -55,6 +92,7 @@ class GroupLotteryParsingTests(unittest.TestCase):
     def test_usage_text_is_safe_for_html_parse_mode(self) -> None:
         self.assertIn("&lt;积分&gt;", GROUP_LOTTERY_USAGE)
         self.assertNotIn("<积分>", GROUP_LOTTERY_USAGE)
+        self.assertIn("cost &lt;报名积分&gt;", GROUP_LOTTERY_USAGE)
 
 
 if __name__ == "__main__":

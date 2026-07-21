@@ -116,7 +116,7 @@ class Settings:
         human_verify_enabled = _parse_bool(os.getenv("HUMAN_VERIFY_ENABLED", "false"))
         human_verify_chat_ids = _parse_chat_ids(os.getenv("HUMAN_VERIFY_CHAT_IDS", ""))
         human_verify_timeout_seconds = int(
-            os.getenv("HUMAN_VERIFY_TIMEOUT_SECONDS", "300")
+            os.getenv("HUMAN_VERIFY_TIMEOUT_SECONDS", "120")
         )
         if (
             min(

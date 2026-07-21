@@ -9,7 +9,12 @@ from aiogram import Dispatcher
 
 from app.config import Settings
 from app.database import Database
-from app.handlers import answer_callback, build_router, create_human_verify_challenge
+from app.handlers import (
+    answer_callback,
+    build_router,
+    create_human_verify_challenge,
+    parse_bot_command,
+)
 from app.keyboards import main_menu
 
 
@@ -55,6 +60,19 @@ class HandlerSafetyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(challenge.options), 3)
         self.assertEqual(len(set(challenge.options)), 3)
         self.assertIn(challenge.answer, challenge.options)
+
+    def test_parse_bot_command_ignores_bare_or_invalid_slash(self) -> None:
+        self.assertIsNone(parse_bot_command("/"))
+        self.assertIsNone(parse_bot_command("/中文"))
+        self.assertIsNone(parse_bot_command("/points@"))
+
+    def test_parse_bot_command_extracts_name_and_mention(self) -> None:
+        command = parse_bot_command("/Points@TujieBot extra")
+
+        self.assertIsNotNone(command)
+        assert command is not None
+        self.assertEqual(command.name, "points")
+        self.assertEqual(command.mention, "tujiebot")
 
     def test_router_builds_with_private_child_and_group_guards(self) -> None:
         settings = Settings(

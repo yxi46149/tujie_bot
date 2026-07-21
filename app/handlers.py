@@ -42,6 +42,7 @@ from app.group_lottery import (
 from app.i18n import DEFAULT_LANGUAGE, Language, is_english, normalize_language, pick
 from app.keyboards import (
     language_menu,
+    invite_menu,
     lottery_menu,
     main_menu,
     product_menu,
@@ -51,6 +52,7 @@ from app.privacy import masked_user_link
 from app.texts import (
     help_message,
     invite_message,
+    invite_copy_text,
     invites_message,
     my_cards_message,
     points_message,
@@ -77,11 +79,64 @@ class HumanVerifyChallenge:
     options: tuple[int, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class ParsedBotCommand:
+    name: str
+    mention: str | None = None
+
+
+PRIVATE_ONLY_GROUP_COMMANDS = frozenset(
+    {
+        "start",
+        "points",
+        "verify",
+        "invite",
+        "myinvites",
+        "shop",
+        "lottery",
+        "mycards",
+        "rank",
+        "language",
+        "lang",
+        "help",
+        "admin",
+        "stats",
+        "products",
+        "addproduct",
+        "toggleproduct",
+        "lotteryprizes",
+        "addlotteryprize",
+        "togglelotteryprize",
+        "addpoints",
+    }
+)
+
+
 def parse_inviter(payload: str | None) -> int | None:
     if not payload or not payload.startswith("ref_"):
         return None
     value = payload.removeprefix("ref_")
     return int(value) if value.isdigit() else None
+
+
+def parse_bot_command(text: str | None) -> ParsedBotCommand | None:
+    if not text:
+        return None
+    stripped = text.strip()
+    if not stripped.startswith("/"):
+        return None
+    token = stripped.split(maxsplit=1)[0]
+    raw_command = token[1:]
+    if not raw_command:
+        return None
+
+    name, separator, mention = raw_command.partition("@")
+    allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
+    if not name or any(character not in allowed for character in name):
+        return None
+    if separator and not mention:
+        return None
+    return ParsedBotCommand(name=name.lower(), mention=mention.lower() or None)
 
 
 def is_member_status(member: object) -> bool:
@@ -184,7 +239,9 @@ def build_router(settings: Settings, db: Database) -> Router:
 
     verification_attempts: dict[int, float] = {}
     recent_human_verifications: dict[tuple[int, int], float] = {}
+    human_verification_timeout_tasks: set[asyncio.Task[None]] = set()
     verification_semaphore = asyncio.Semaphore(settings.verify_max_concurrency)
+    bot_username_cache: str | None = None
 
     def is_admin(message: Message) -> bool:
         return bool(message.from_user and message.from_user.id in settings.admin_ids)
@@ -205,6 +262,21 @@ def build_router(settings: Settings, db: Database) -> Router:
             if isinstance(chat_id, str) and chat_id in chat_handles:
                 return True
         return False
+
+    async def command_targets_this_bot(
+        bot: Bot, command: ParsedBotCommand
+    ) -> bool:
+        nonlocal bot_username_cache
+        if not command.mention:
+            return True
+        if bot_username_cache is None:
+            try:
+                me = await bot.get_me()
+            except TelegramAPIError:
+                logger.exception("无法获取机器人用户名，跳过带 @ 的命令。")
+                return False
+            bot_username_cache = (me.username or "").lower()
+        return command.mention == bot_username_cache
 
     def muted_permissions() -> ChatPermissions:
         return ChatPermissions(can_send_messages=False)
@@ -241,6 +313,73 @@ def build_router(settings: Settings, db: Database) -> Router:
             )
             return False
         return True
+
+    async def remove_unverified_human_member(
+        bot: Bot, chat_id: int, user_id: int
+    ) -> None:
+        try:
+            await bot.ban_chat_member(chat_id=chat_id, user_id=user_id)
+        except TelegramAPIError:
+            logger.exception(
+                "新人验证超时但移除成员失败，chat_id=%s user_id=%s",
+                chat_id,
+                user_id,
+            )
+            return
+        try:
+            await bot.unban_chat_member(
+                chat_id=chat_id,
+                user_id=user_id,
+                only_if_banned=True,
+            )
+        except TelegramAPIError:
+            logger.exception(
+                "新人验证超时移除后解除封禁失败，chat_id=%s user_id=%s",
+                chat_id,
+                user_id,
+            )
+
+    async def delete_human_verification_message(
+        bot: Bot, chat_id: int, message_id: int
+    ) -> None:
+        try:
+            await bot.delete_message(chat_id=chat_id, message_id=message_id)
+        except TelegramAPIError:
+            logger.info(
+                "新人验证消息删除失败或已删除，chat_id=%s message_id=%s",
+                chat_id,
+                message_id,
+            )
+
+    async def cleanup_expired_human_verification(
+        bot: Bot, chat_id: int, user_id: int, token: str, message_id: int
+    ) -> None:
+        try:
+            await asyncio.sleep(settings.human_verify_timeout_seconds)
+            status = await db.expire_human_verification(chat_id, user_id, token)
+            if status != "expired":
+                return
+            await remove_unverified_human_member(bot, chat_id, user_id)
+            await delete_human_verification_message(bot, chat_id, message_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception(
+                "新人验证超时清理任务异常，chat_id=%s user_id=%s",
+                chat_id,
+                user_id,
+            )
+
+    def schedule_human_verification_cleanup(
+        bot: Bot, chat_id: int, user_id: int, token: str, message_id: int
+    ) -> None:
+        task = asyncio.create_task(
+            cleanup_expired_human_verification(
+                bot, chat_id, user_id, token, message_id
+            )
+        )
+        human_verification_timeout_tasks.add(task)
+        task.add_done_callback(human_verification_timeout_tasks.discard)
 
     async def start_human_verification(
         bot: Bot, chat_id: int, member: User
@@ -298,12 +437,12 @@ def build_router(settings: Settings, db: Database) -> Router:
         )
         timeout_minutes = max(1, ceil(settings.human_verify_timeout_seconds / 60))
         try:
-            await bot.send_message(
+            sent = await bot.send_message(
                 chat_id,
                 f"{masked_user_link(member.id, member.username, member.first_name)} "
                 f"欢迎入群，请在 <b>{timeout_minutes}</b> 分钟内完成验证。\n\n"
                 f"请回答：<b>{escape(challenge.question)}</b> = ?\n"
-                "选择正确答案后会自动解除发言限制。",
+                "选择正确答案后会自动解除发言限制；超时未验证会被移出群。",
                 reply_markup=keyboard,
             )
         except TelegramAPIError:
@@ -315,6 +454,9 @@ def build_router(settings: Settings, db: Database) -> Router:
             await unmute_human_verified_member(bot, chat_id, member.id)
             recent_human_verifications.pop(recent_key, None)
             return "message_error"
+        schedule_human_verification_cleanup(
+            bot, chat_id, member.id, token, sent.message_id
+        )
         return "started"
 
     def verification_cooldown_remaining(user_id: int) -> int:
@@ -375,10 +517,15 @@ def build_router(settings: Settings, db: Database) -> Router:
         verified, _ = await db.get_invite_counts(user_id)
         return points_message(int(user["points"]) if user else 0, verified, lang)
 
-    async def render_invite(user_id: int, bot: Bot, lang: Language) -> str:
+    async def render_invite(
+        user_id: int, bot: Bot, lang: Language
+    ) -> tuple[str, InlineKeyboardMarkup]:
         me = await bot.get_me()
         link = f"https://t.me/{me.username}?start=ref_{user_id}"
-        return invite_message(link, settings.invite_reward, lang)
+        return (
+            invite_message(link, settings.invite_reward, lang),
+            invite_menu(invite_copy_text(link, lang), lang),
+        )
 
     async def render_my_invites(user_id: int, lang: Language) -> str:
         verified, pending = await db.get_invite_counts(user_id)
@@ -763,6 +910,19 @@ def build_router(settings: Settings, db: Database) -> Router:
                 else "这个抽奖参与人数已满，正在开奖或已结束。"
             )
             return
+        if outcome.status == "insufficient_points":
+            await message.reply(
+                (
+                    f"❌ Not enough points. Entry costs <b>{outcome.entry_cost}</b> "
+                    f"points; you currently have <b>{outcome.points}</b> points."
+                )
+                if is_english(lang)
+                else (
+                    f"❌ 积分不足，参与需要 <b>{outcome.entry_cost}</b> 积分，"
+                    f"你当前有 <b>{outcome.points}</b> 积分。"
+                )
+            )
+            return
         if outcome.status != "ok":
             await message.reply(
                 "This lottery has ended." if is_english(lang) else "这个抽奖已经结束。"
@@ -777,6 +937,8 @@ def build_router(settings: Settings, db: Database) -> Router:
                 outcome.participant_count,
                 outcome.target_participants,
                 lang,
+                entry_cost=outcome.entry_cost,
+                points=outcome.points,
             )
         )
         await db.set_group_lottery_feedback(lottery_id, feedback.message_id)
@@ -851,9 +1013,17 @@ def build_router(settings: Settings, db: Database) -> Router:
             winner_label = "winners" if is_english(lang) else "中奖"
             winner_unit = "" if is_english(lang) else " 人"
             separator = " | " if is_english(lang) else "｜"
+            entry_cost = int(row["entry_cost"] or 0)  # type: ignore[index]
+            entry_text = (
+                f"{separator}entry {entry_cost} points"
+                if is_english(lang) and entry_cost > 0
+                else f"{separator}报名 {entry_cost} 积分"
+                if entry_cost > 0
+                else ""
+            )
             lines.append(
                 f"#{row['id']} {escape(str(row['title']))}{separator}"  # type: ignore[index]
-                f"{prize}{separator}{winner_label} {int(row['winner_count'])}{winner_unit}{separator}{mode}"  # type: ignore[index]
+                f"{prize}{separator}{winner_label} {int(row['winner_count'])}{winner_unit}{separator}{mode}{entry_text}"  # type: ignore[index]
             )
             trigger = str(row["trigger_text"] or "")  # type: ignore[index]
             if trigger:
@@ -1000,6 +1170,7 @@ def build_router(settings: Settings, db: Database) -> Router:
             draw_mode=parsed.draw_mode,
             target_participants=parsed.target_participants,
             draw_at=parsed.draw_at,
+            entry_cost=parsed.entry_cost,
         )
         if outcome.status == "invalid":
             await message.reply(group_lottery_usage(lang))
@@ -1138,6 +1309,20 @@ def build_router(settings: Settings, db: Database) -> Router:
                 show_alert=True,
             )
             return
+        if outcome.status == "insufficient_points":
+            await callback.answer(
+                (
+                    f"Not enough points. Entry costs {outcome.entry_cost}; "
+                    f"you currently have {outcome.points}."
+                )
+                if is_english(lang)
+                else (
+                    f"积分不足，参与需要 {outcome.entry_cost} 积分，"
+                    f"你当前有 {outcome.points} 积分。"
+                ),
+                show_alert=True,
+            )
+            return
         if outcome.status != "ok":
             await callback.answer(
                 "This lottery has ended." if is_english(lang) else "这个抽奖已经结束。",
@@ -1147,8 +1332,18 @@ def build_router(settings: Settings, db: Database) -> Router:
         await callback.answer(
             (
                 f"Joined successfully. {outcome.participant_count} participants now."
+                + (
+                    f" Entry cost {outcome.entry_cost}, remaining {outcome.points}."
+                    if outcome.entry_cost > 0
+                    else ""
+                )
                 if is_english(lang)
                 else f"参与成功，当前 {outcome.participant_count} 人参与。"
+                + (
+                    f" 已扣 {outcome.entry_cost} 积分，剩余 {outcome.points}。"
+                    if outcome.entry_cost > 0
+                    else ""
+                )
             ),
             show_alert=True,
         )
@@ -1262,7 +1457,12 @@ def build_router(settings: Settings, db: Database) -> Router:
         if lottery:
             await handle_group_lottery_participation(message, bot, int(lottery["id"]))
             return
-        if text.startswith("/"):
+        command = parse_bot_command(text)
+        if (
+            command
+            and command.name in PRIVATE_ONLY_GROUP_COMMANDS
+            and await command_targets_this_bot(bot, command)
+        ):
             lang = await ensure_message_user(message)
             await message.reply(
                 "🔒 For points and card-code safety, please use this command in private chat."
@@ -1305,7 +1505,8 @@ def build_router(settings: Settings, db: Database) -> Router:
         if not message.from_user:
             return
         lang = await ensure_message_user(message)
-        await message.answer(await render_invite(message.from_user.id, bot, lang))
+        text, keyboard = await render_invite(message.from_user.id, bot, lang)
+        await message.answer(text, reply_markup=keyboard)
 
     @router.message(Command("myinvites"))
     async def command_my_invites(message: Message) -> None:
@@ -1395,8 +1596,12 @@ def build_router(settings: Settings, db: Database) -> Router:
     async def callback_invite(callback: CallbackQuery, bot: Bot) -> None:
         await callback.answer()
         lang = await ensure_callback_user(callback)
+        text, keyboard = await render_invite(callback.from_user.id, bot, lang)
         await answer_callback(
-            callback, bot, await render_invite(callback.from_user.id, bot, lang)
+            callback,
+            bot,
+            text,
+            reply_markup=keyboard,
         )
 
     @router.callback_query(F.data == "menu:myinvites")
@@ -1926,7 +2131,10 @@ def build_router(settings: Settings, db: Database) -> Router:
             await message.answer(f"✅ 调整成功，用户当前积分：<b>{points}</b>")
 
     @router.message(F.text.startswith("/"))
-    async def unknown_command(message: Message) -> None:
+    async def unknown_command(message: Message, bot: Bot) -> None:
+        command = parse_bot_command(message.text)
+        if not command or not await command_targets_this_bot(bot, command):
+            return
         lang = await ensure_message_user(message)
         await message.answer(
             "Unknown command. Send /help for instructions."

@@ -51,6 +51,16 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.human_verify_chat_ids, (-100123, "@groupname"))
         self.assertEqual(settings.human_verify_timeout_seconds, 120)
 
+    def test_human_verify_timeout_defaults_to_two_minutes(self) -> None:
+        environment = {
+            "BOT_TOKEN": "123456:dummy-token",
+            "TIMEZONE": "Asia/Shanghai",
+        }
+        with patch.dict(os.environ, environment, clear=True):
+            settings = Settings.from_env()
+
+        self.assertEqual(settings.human_verify_timeout_seconds, 120)
+
 
 if __name__ == "__main__":
     unittest.main()

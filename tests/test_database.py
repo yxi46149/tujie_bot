@@ -192,6 +192,39 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(completed, "expired")
 
+    async def test_expire_human_verification_marks_matching_pending_token(self) -> None:
+        expires_at = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat(
+            timespec="seconds"
+        )
+        token = await self.db.create_human_verification(
+            -1001, 200, "user", "用户", expires_at, 12
+        )
+
+        expired = await self.db.expire_human_verification(-1001, 200, token)
+        repeated = await self.db.expire_human_verification(-1001, 200, token)
+        completed = await self.db.complete_human_verification(-1001, 200, token, 12)
+
+        self.assertEqual(expired, "expired")
+        self.assertEqual(repeated, "expired")
+        self.assertEqual(completed, "expired")
+
+    async def test_expire_human_verification_ignores_old_or_early_token(self) -> None:
+        expires_at = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(
+            timespec="seconds"
+        )
+        old_token = await self.db.create_human_verification(
+            -1001, 200, "user", "用户", expires_at, 12
+        )
+        new_token = await self.db.create_human_verification(
+            -1001, 200, "user", "用户", expires_at, 12
+        )
+
+        old_result = await self.db.expire_human_verification(-1001, 200, old_token)
+        early_result = await self.db.expire_human_verification(-1001, 200, new_token)
+
+        self.assertEqual(old_result, "invalid_token")
+        self.assertEqual(early_result, "pending")
+
     async def test_concurrent_replay_only_redeems_one_card(self) -> None:
         await self.db.register_user(100, None, "用户")
         await self.db.adjust_points(100, 20)
@@ -336,6 +369,106 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(product["stock"], 0)
         self.assertEqual(len(redemptions), 1)
         self.assertEqual(redemptions[0]["code"], "GROUP-CODE")
+
+    async def test_group_lottery_entry_cost_charges_each_participant(self) -> None:
+        await self.db.register_user(100, None, "管理员")
+        await self.db.register_user(200, "one", "用户一")
+        await self.db.register_user(201, "two", "用户二")
+        await self.db.adjust_points(200, 10)
+        await self.db.adjust_points(201, 10)
+        product_id = await self.db.add_product("付费抽奖卡密", 50)
+        await self.db.add_cards(product_id, ["PAID-CODE"])
+        created = await self.db.create_group_lottery(
+            -1001,
+            100,
+            "付费群抽奖",
+            "product",
+            product_id,
+            1,
+            entry_cost=2,
+        )
+
+        first_join = await self.db.join_group_lottery(
+            created.lottery_id, 200, "one", "用户一"
+        )
+        second_join = await self.db.join_group_lottery(
+            created.lottery_id, 201, "two", "用户二"
+        )
+        duplicate_join = await self.db.join_group_lottery(
+            created.lottery_id, 200, "one-new", "用户一新"
+        )
+        outcome = await self.db.draw_group_lottery(created.lottery_id)
+        user_one = await self.db.get_user(200)
+        user_two = await self.db.get_user(201)
+        redemptions_one = await self.db.get_user_redemptions(200)
+        redemptions_two = await self.db.get_user_redemptions(201)
+
+        self.assertEqual(first_join.status, "ok")
+        self.assertEqual(first_join.entry_cost, 2)
+        self.assertEqual(first_join.points, 8)
+        self.assertEqual(second_join.status, "ok")
+        self.assertEqual(second_join.points, 8)
+        self.assertEqual(duplicate_join.status, "already_joined")
+        self.assertEqual(user_one["points"], 8)
+        self.assertEqual(user_two["points"], 8)
+        self.assertEqual(outcome.status, "ok")
+        self.assertEqual(outcome.entry_cost, 2)
+        self.assertEqual(len(redemptions_one) + len(redemptions_two), 1)
+
+    async def test_group_lottery_entry_cost_rejects_insufficient_points(self) -> None:
+        await self.db.register_user(100, None, "管理员")
+        await self.db.register_user(200, "poor", "积分不足")
+        product_id = await self.db.add_product("付费抽奖卡密", 50)
+        await self.db.add_cards(product_id, ["PAID-CODE"])
+        created = await self.db.create_group_lottery(
+            -1001,
+            100,
+            "付费群抽奖",
+            "product",
+            product_id,
+            1,
+            entry_cost=2,
+        )
+
+        join = await self.db.join_group_lottery(
+            created.lottery_id, 200, "poor", "积分不足"
+        )
+        user = await self.db.get_user(200)
+        lottery = await self.db.get_group_lottery(created.lottery_id)
+
+        self.assertEqual(join.status, "insufficient_points")
+        self.assertEqual(join.entry_cost, 2)
+        self.assertEqual(join.points, 0)
+        self.assertEqual(user["points"], 0)
+        self.assertEqual(int(lottery["participant_count"]), 0)
+
+    async def test_group_lottery_entry_cost_is_refunded_on_cancel(self) -> None:
+        await self.db.register_user(100, None, "管理员")
+        await self.db.register_user(200, "one", "用户一")
+        await self.db.register_user(201, "two", "用户二")
+        await self.db.adjust_points(200, 10)
+        await self.db.adjust_points(201, 10)
+        created = await self.db.create_group_lottery(
+            -1001,
+            100,
+            "取消退费",
+            "points",
+            5,
+            1,
+            entry_cost=2,
+        )
+        await self.db.join_group_lottery(created.lottery_id, 200, "one", "用户一")
+        await self.db.join_group_lottery(created.lottery_id, 201, "two", "用户二")
+
+        cancelled = await self.db.cancel_group_lottery(created.lottery_id)
+        cancelled_again = await self.db.cancel_group_lottery(created.lottery_id)
+        user_one = await self.db.get_user(200)
+        user_two = await self.db.get_user(201)
+
+        self.assertTrue(cancelled)
+        self.assertFalse(cancelled_again)
+        self.assertEqual(user_one["points"], 10)
+        self.assertEqual(user_two["points"], 10)
 
     async def test_group_lottery_rejects_product_with_insufficient_stock(self) -> None:
         await self.db.register_user(100, None, "管理员")

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import CopyTextButton, InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.i18n import DEFAULT_LANGUAGE, Language, is_english
 
@@ -109,6 +109,23 @@ def language_menu(current_language: Language = DEFAULT_LANGUAGE) -> InlineKeyboa
                     callback_data="menu:start",
                 )
             ],
+        ]
+    )
+
+
+def invite_menu(
+    copy_text: str,
+    lang: Language = DEFAULT_LANGUAGE,
+) -> InlineKeyboardMarkup:
+    english = is_english(lang)
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📋 Copy invite text" if english else "📋 一键复制邀请文案",
+                    copy_text=CopyTextButton(text=copy_text),
+                )
+            ]
         ]
     )
 

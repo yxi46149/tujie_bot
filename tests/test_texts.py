@@ -3,8 +3,14 @@ from __future__ import annotations
 import unittest
 
 from app.group_lottery import participation_message
-from app.keyboards import language_menu, main_menu
-from app.texts import points_message, points_rank_message, profile
+from app.keyboards import invite_menu, language_menu, main_menu
+from app.texts import (
+    invite_copy_text,
+    invite_message,
+    points_message,
+    points_rank_message,
+    profile,
+)
 
 
 class TextFormattingTests(unittest.TestCase):
@@ -29,6 +35,24 @@ class TextFormattingTests(unittest.TestCase):
         self.assertIn("Language", dashboard)
         self.assertIn("Available points", points)
         self.assertNotIn("个人中心", dashboard)
+
+    def test_invite_message_contains_copyable_promo_text(self) -> None:
+        link = "https://t.me/txxxx?start=ref_100"
+        message = invite_message(link, 5)
+        copy_text = invite_copy_text(link)
+
+        self.assertIn("签到即可领取codex接码CDK", message)
+        self.assertEqual(copy_text, f"{link}\n签到即可领取codex接码CDK")
+
+    def test_invite_menu_has_copy_text_button(self) -> None:
+        copy_text = "https://t.me/txxxx\n签到即可领取codex接码CDK"
+        keyboard = invite_menu(copy_text)
+        button = keyboard.inline_keyboard[0][0]
+
+        self.assertEqual(button.text, "📋 一键复制邀请文案")
+        self.assertIsNotNone(button.copy_text)
+        assert button.copy_text is not None
+        self.assertEqual(button.copy_text.text, copy_text)
 
     def test_keyboards_support_language_switching(self) -> None:
         keyboard = main_menu((), "en")

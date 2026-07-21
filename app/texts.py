@@ -123,16 +123,26 @@ def invite_message(
     if is_english(lang):
         return (
             "🔗 <b>Your Invite Link</b>\n\n"
-            f"<code>{escape(link)}</code>\n\n"
-            "Your friend must start the bot through this link and pass /verify. "
-            f"You will then receive <b>{reward}</b> points."
+            "Share this invite text with friends:\n\n"
+            f"<code>{escape(invite_copy_text(link, lang))}</code>\n\n"
+            "After your friend starts the bot through this link and passes /verify, "
+            f"you will receive <b>{reward}</b> points.\n"
+            "Tap the button below to copy the invite text."
         )
     return (
         "🔗 <b>您的专属邀请入口</b>\n\n"
-        f"<code>{escape(link)}</code>\n\n"
-        "好友必须通过此链接启动机器人，并完成 /verify，"
-        f"您才会获得 <b>{reward}</b> 积分。"
+        "把下面这段发给好友：\n\n"
+        f"<code>{escape(invite_copy_text(link, lang))}</code>\n\n"
+        "好友通过该入口启动机器人并完成 /verify 后，"
+        f"您可获得 <b>{reward}</b> 积分。\n"
+        "点击下方按钮可一键复制邀请文案。"
     )
+
+
+def invite_copy_text(link: str, lang: Language = DEFAULT_LANGUAGE) -> str:
+    if is_english(lang):
+        return f"{link}\nCheck in to claim a Codex card code."
+    return f"{link}\n签到即可领取codex接码CDK"
 
 
 def invites_message(

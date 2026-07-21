@@ -31,15 +31,18 @@ class ParsedGroupLotteryCommand:
     title: str
     target_participants: int | None = None
     draw_at: str | None = None
+    entry_cost: int = 0
 
 
 GROUP_LOTTERY_USAGE = (
     "用法：\n"
     "/grouplottery points &lt;积分&gt; &lt;中奖人数&gt; time &lt;时长&gt; &lt;参与口令&gt; &lt;标题&gt;\n"
-    "/grouplottery product &lt;商品ID&gt; &lt;中奖人数&gt; count &lt;参与人数&gt; &lt;参与口令&gt; &lt;标题&gt;\n\n"
+    "/grouplottery product &lt;商品ID&gt; &lt;中奖人数&gt; count &lt;参与人数&gt; &lt;参与口令&gt; &lt;标题&gt;\n"
+    "/grouplottery product &lt;商品ID&gt; &lt;中奖人数&gt; time &lt;时长&gt; cost &lt;报名积分&gt; &lt;参与口令&gt; &lt;标题&gt;\n\n"
     "示例：\n"
     "/grouplottery points 20 3 time 10m 抽奖 群福利积分抽奖\n"
-    "/grouplottery product 1 1 count 50 抽卡 群福利卡密抽奖\n\n"
+    "/grouplottery product 1 1 count 50 抽卡 群福利卡密抽奖\n"
+    "/grouplottery product 1 5 time 10m cost 2 兔姐666 codex接码CDK\n\n"
     "也可以换行写：\n"
     "/grouplottery points 20 3 time 10m\n"
     "抽奖\n"
@@ -49,10 +52,12 @@ GROUP_LOTTERY_USAGE = (
 GROUP_LOTTERY_USAGE_EN = (
     "Usage:\n"
     "/grouplottery points &lt;points&gt; &lt;winners&gt; time &lt;duration&gt; &lt;trigger&gt; &lt;title&gt;\n"
-    "/grouplottery product &lt;product_id&gt; &lt;winners&gt; count &lt;participants&gt; &lt;trigger&gt; &lt;title&gt;\n\n"
+    "/grouplottery product &lt;product_id&gt; &lt;winners&gt; count &lt;participants&gt; &lt;trigger&gt; &lt;title&gt;\n"
+    "/grouplottery product &lt;product_id&gt; &lt;winners&gt; time &lt;duration&gt; cost &lt;entry_points&gt; &lt;trigger&gt; &lt;title&gt;\n\n"
     "Examples:\n"
     "/grouplottery points 20 3 time 10m draw Group points giveaway\n"
-    "/grouplottery product 1 1 count 50 card Group card-code giveaway\n\n"
+    "/grouplottery product 1 1 count 50 card Group card-code giveaway\n"
+    "/grouplottery product 1 5 time 10m cost 2 lucky Group card-code giveaway\n\n"
     "Multi-line format is also supported:\n"
     "/grouplottery points 20 3 time 10m\n"
     "draw\n"
@@ -90,22 +95,49 @@ def parse_group_lottery_command(args: str | None) -> ParsedGroupLotteryCommand |
     if not args or not args.strip():
         return None
     lines = [line.strip() for line in args.strip().splitlines() if line.strip()]
+    fee_keywords = {"cost", "fee", "entry", "积分", "报名费", "扣分"}
+
+    def has_fee_keyword(parts: list[str]) -> bool:
+        return len(parts) == 7 and parts[5].strip().lower() in fee_keywords
+
     if len(lines) >= 3:
         first_line_parts = lines[0].split()
-        if len(first_line_parts) == 5:
+        if len(first_line_parts) in {5, 7}:
             parts = [*first_line_parts, lines[1], "\n".join(lines[2:])]
         else:
-            parts = args.strip().split(maxsplit=6)
+            preview_parts = args.strip().split(maxsplit=6)
+            if has_fee_keyword(preview_parts):
+                parts = args.strip().split(maxsplit=8)
+            else:
+                parts = preview_parts
     else:
-        parts = args.strip().split(maxsplit=6)
+        preview_parts = args.strip().split(maxsplit=6)
+        if has_fee_keyword(preview_parts):
+            parts = args.strip().split(maxsplit=8)
+        else:
+            parts = preview_parts
 
-    if len(parts) != 7:
+    if len(parts) not in {7, 9}:
         return None
 
     prize_type = parts[0].lower()
     draw_mode = normalize_draw_mode(parts[3])
-    trigger_text = parts[5].strip()
-    title = parts[6].strip()
+    entry_cost = 0
+    if len(parts) == 9:
+        fee_keyword = parts[5].strip().lower()
+        if fee_keyword not in fee_keywords:
+            return None
+        try:
+            entry_cost = int(parts[6])
+        except ValueError:
+            return None
+        if entry_cost < 0:
+            return None
+        trigger_text = parts[7].strip()
+        title = parts[8].strip()
+    else:
+        trigger_text = parts[5].strip()
+        title = parts[6].strip()
     if prize_type not in {"points", "product"} or draw_mode is None:
         return None
     if not trigger_text or not title:
@@ -134,6 +166,7 @@ def parse_group_lottery_command(args: str | None) -> ParsedGroupLotteryCommand |
             trigger_text=trigger_text,
             title=title,
             draw_at=draw_at,
+            entry_cost=entry_cost,
         )
 
     try:
@@ -150,6 +183,7 @@ def parse_group_lottery_command(args: str | None) -> ParsedGroupLotteryCommand |
         trigger_text=trigger_text,
         title=title,
         target_participants=target_participants,
+        entry_cost=entry_cost,
     )
 
 
@@ -219,6 +253,13 @@ def group_lottery_announcement(
             if is_english(lang)
             else f"满 <b>{parsed.target_participants}</b> 人自动开奖"
         )
+    entry_text = (
+        f"Entry cost: <b>{parsed.entry_cost}</b> points\n"
+        if is_english(lang) and parsed.entry_cost > 0
+        else f"报名消耗：<b>{parsed.entry_cost}</b> 积分\n"
+        if parsed.entry_cost > 0
+        else ""
+    )
     if is_english(lang):
         return (
             "🎉 <b>Group Lottery Started</b>\n\n"
@@ -227,6 +268,7 @@ def group_lottery_announcement(
             "Prize: "
             f"<b>{prize_label(parsed.prize_type, parsed.prize_value, product_name, lang)}</b>\n"
             f"Winners: <b>{parsed.winner_count}</b>\n"
+            f"{entry_text}"
             f"{mode}\n\n"
             f"Trigger phrase: <code>{escape(parsed.trigger_text)}</code>\n"
             "Send the exact phrase in this group to join."
@@ -238,6 +280,7 @@ def group_lottery_announcement(
         "奖品："
         f"<b>{prize_label(parsed.prize_type, parsed.prize_value, product_name, lang)}</b>\n"
         f"中奖人数：<b>{parsed.winner_count}</b>\n"
+        f"{entry_text}"
         f"{mode}\n\n"
         f"参与口令：<code>{escape(parsed.trigger_text)}</code>\n"
         "在本群发送完全一致的口令即可参与。"
@@ -251,6 +294,8 @@ def participation_message(
     participant_count: int,
     target_participants: int | None,
     lang: Language = DEFAULT_LANGUAGE,
+    entry_cost: int = 0,
+    points: int | None = None,
 ) -> str:
     count_text = (
         f"{participant_count}/{target_participants}"
@@ -258,13 +303,25 @@ def participation_message(
         else str(participant_count)
     )
     if is_english(lang):
+        fee_lines = []
+        if entry_cost > 0:
+            fee_lines.append(f"Entry cost: <b>{entry_cost}</b> points")
+            if points is not None:
+                fee_lines.append(f"Remaining points: <b>{points}</b>")
         return (
             f"✅ {display_user(user_id, username, first_name)} joined successfully\n"
             f"Participants: <b>{count_text}</b>"
+            + (("\n" + "\n".join(fee_lines)) if fee_lines else "")
         )
+    fee_lines = []
+    if entry_cost > 0:
+        fee_lines.append(f"报名消耗：<b>{entry_cost}</b> 积分")
+        if points is not None:
+            fee_lines.append(f"剩余积分：<b>{points}</b>")
     return (
         f"✅ {display_user(user_id, username, first_name)} 参与成功\n"
         f"当前参与人数：<b>{count_text}</b>"
+        + (("\n" + "\n".join(fee_lines)) if fee_lines else "")
     )
 
 
@@ -389,10 +446,16 @@ def group_lottery_result_message(
             f"Title: <b>{escape(outcome.title)}</b>",
             f"Participants: <b>{outcome.participant_count}</b>",
             f"Prize: <b>{escape(outcome.prize_name)}</b>",
-            "",
-            "<b>Winners:</b>",
-            *[f"• {line}" for line in winner_lines],
         ]
+        if outcome.entry_cost > 0:
+            result_lines.append(f"Entry cost: <b>{outcome.entry_cost}</b> points")
+        result_lines.extend(
+            [
+                "",
+                "<b>Winners:</b>",
+                *[f"• {line}" for line in winner_lines],
+            ]
+        )
     else:
         result_lines = [
             "🎊 <b>群抽奖已开奖</b>",
@@ -401,10 +464,16 @@ def group_lottery_result_message(
             f"标题：<b>{escape(outcome.title)}</b>",
             f"参与人数：<b>{outcome.participant_count}</b>",
             f"奖品：<b>{escape(outcome.prize_name)}</b>",
-            "",
-            "<b>中奖用户：</b>",
-            *[f"• {line}" for line in winner_lines],
         ]
+        if outcome.entry_cost > 0:
+            result_lines.append(f"报名消耗：<b>{outcome.entry_cost}</b> 积分")
+        result_lines.extend(
+            [
+                "",
+                "<b>中奖用户：</b>",
+                *[f"• {line}" for line in winner_lines],
+            ]
+        )
     if outcome.prize_type == "product":
         result_lines.extend(
             [
@@ -441,6 +510,8 @@ def group_lottery_failure_message(
 ) -> str:
     if is_english(lang):
         suffix = "This lottery has been cancelled." if cancelled else "Please draw it later."
+        if cancelled and outcome.entry_cost > 0:
+            suffix += " Entry fees have been refunded."
         if outcome.status == "no_participants":
             return f"🎲 Lottery <code>{lottery_id}</code> has no participants. {suffix}"
         if outcome.status == "product_inactive":
@@ -452,6 +523,8 @@ def group_lottery_failure_message(
             )
         return f"🎲 Lottery <code>{lottery_id}</code> cannot be drawn now. {suffix}"
     suffix = "本次抽奖已取消。" if cancelled else "请稍后再开奖。"
+    if cancelled and outcome.entry_cost > 0:
+        suffix += " 报名积分已退回。"
     if outcome.status == "no_participants":
         return f"🎲 抽奖 <code>{lottery_id}</code> 没有人参与，{suffix}"
     if outcome.status == "product_inactive":

@@ -47,7 +47,7 @@ CHECKIN_REWARD=1
 LOTTERY_COST=5
 HUMAN_VERIFY_ENABLED=false
 HUMAN_VERIFY_CHAT_IDS=
-HUMAN_VERIFY_TIMEOUT_SECONDS=300
+HUMAN_VERIFY_TIMEOUT_SECONDS=120
 TIMEZONE=Asia/Shanghai
 DATABASE_PATH=data/bot.db
 ```
@@ -77,8 +77,8 @@ REQUIRED_CHAT_NAMES=通知频道,交流群
 1. 把机器人加入需要检查关注的频道/群。
 2. 在频道和群里把机器人设为管理员，否则 `getChatMember` 检查不稳定。
 3. 群抽奖如果用“发送口令参与”，需要找 `@BotFather` 执行 `/setprivacy`，选择你的机器人后设为 `Disable`。
-4. 新人进群验证需要给机器人“限制成员”权限。
-5. 如果希望机器人删除上一条参与反馈或验证消息，建议在群里给机器人“删除消息”权限。
+4. 新人进群验证需要给机器人“限制成员/移除成员”权限。
+5. 新人验证会销毁验证消息，群抽奖会删除上一条参与反馈，建议在群里给机器人“删除消息”权限；启用新人验证时必须具备该权限。
 
 注意：管理员命令只认 `.env` 的 `ADMIN_IDS`，不是谁在群里是群管理员谁就能操作。
 
@@ -95,7 +95,7 @@ REQUIRED_CHAT_NAMES=通知频道,交流群
 ```dotenv
 HUMAN_VERIFY_ENABLED=true
 HUMAN_VERIFY_CHAT_IDS=-1001234567890
-HUMAN_VERIFY_TIMEOUT_SECONDS=300
+HUMAN_VERIFY_TIMEOUT_SECONDS=120
 ```
 
 说明：
@@ -104,11 +104,11 @@ HUMAN_VERIFY_TIMEOUT_SECONDS=300
 |---|---|
 | `HUMAN_VERIFY_ENABLED` | 是否启用新人进群验证 |
 | `HUMAN_VERIFY_CHAT_IDS` | 启用验证的群；为空表示所有群都启用 |
-| `HUMAN_VERIFY_TIMEOUT_SECONDS` | 验证按钮有效期，默认 300 秒 |
+| `HUMAN_VERIFY_TIMEOUT_SECONDS` | 验证有效期，默认 120 秒 |
 
 启用后，新人进群会先被禁言。机器人会在群里发送一条本人专属算术题验证消息；用户选择正确答案后自动解除发言限制。别人点击该用户的验证按钮不会通过。
 
-如果按钮过期，用户仍会保持受限状态，需要管理员处理，或让用户重新进群触发新验证。
+如果 2 分钟内没有完成验证，机器人会自动删除验证消息，并把该用户移出群；移出后会立即解除封禁，用户后续仍可重新进群触发新验证。
 
 ## 5. 商品和卡密
 
@@ -198,12 +198,14 @@ Remove-Item .\data\bot.db
 ```text
 /grouplottery points <积分> <中奖人数> time <时长> <参与口令> <标题>
 /grouplottery product <商品ID> <中奖人数> time <时长> <参与口令> <标题>
+/grouplottery product <商品ID> <中奖人数> time <时长> cost <报名积分> <参与口令> <标题>
 ```
 
 示例：
 
 ```text
 /grouplottery points 20 3 time 10m 抽奖 群福利积分抽奖
+/grouplottery product 1 5 time 10m cost 2 兔姐666 codex接码CDK
 ```
 
 `10m` 后自动开奖。时长支持：
@@ -223,6 +225,7 @@ Remove-Item .\data\bot.db
 ```text
 /grouplottery points <积分> <中奖人数> count <参与人数> <参与口令> <标题>
 /grouplottery product <商品ID> <中奖人数> count <参与人数> <参与口令> <标题>
+/grouplottery product <商品ID> <中奖人数> count <参与人数> cost <报名积分> <参与口令> <标题>
 ```
 
 示例：
@@ -233,7 +236,25 @@ Remove-Item .\data\bot.db
 
 达到 50 人参与后自动开奖。
 
-### 7.3 多行写法
+### 7.3 报名扣积分
+
+需要“拿积分抽卡密”时，在群抽奖命令里加入 `cost <报名积分>`：
+
+```text
+/grouplottery product 1 5 time 10m cost 2 兔姐666 codex接码CDK
+```
+
+这条命令表示：抽商品 ID 为 `1` 的卡密，中奖名额 `5` 个，`10m` 后开奖，群友发送 `兔姐666` 参与，每个成功参与者扣 `2` 积分，抽奖标题是 `codex接码CDK`。
+
+处理规则：
+
+1. 积分在参与成功时立即扣除；
+2. 积分不足的用户不会进入抽奖名单；
+3. 同一个用户重复发送口令不会重复扣分；
+4. 抽到卡密后，机器人私聊中奖用户发卡密，并写入 `/mycards`；
+5. 定时或满人开奖失败并自动取消时，已扣的报名积分会退回。
+
+### 7.4 多行写法
 
 如果参与口令或标题比较长，推荐多行写：
 
@@ -253,7 +274,7 @@ Remove-Item .\data\bot.db
 
 如果配置了 `REQUIRED_CHAT_IDS`，参与群抽奖时也会检查用户是否已经加入全部指定频道/群。
 
-### 7.4 手动开奖
+### 7.5 手动开奖
 
 管理员可以对未开奖抽奖手动开奖：
 
@@ -264,7 +285,7 @@ Remove-Item .\data\bot.db
 
 `/lotteries` 会列出当前群所有未开奖抽奖，包括编号、标题、参与人数、开奖模式和口令。`/drawlottery 1` 中的 `1` 是抽奖编号。
 
-### 7.5 兑奖方式
+### 7.6 兑奖方式
 
 积分奖：开奖后直接给中奖用户加积分。
 

@@ -71,12 +71,17 @@ async def run() -> int:
                     continue
                 if not bool(getattr(membership, "can_restrict_members", False)):
                     errors.append(
-                        f"新人验证群（{chat_id}）中机器人缺少“限制成员”权限。"
+                        f"新人验证群（{chat_id}）中机器人缺少“限制成员/移除成员”权限。"
+                    )
+                    continue
+                if not bool(getattr(membership, "can_delete_messages", False)):
+                    errors.append(
+                        f"新人验证群（{chat_id}）中机器人缺少“删除消息”权限。"
                     )
                     continue
                 print(
                     f"[通过] 新人验证群：{chat.title or chat_id}，"
-                    "机器人具备限制成员权限"
+                    "机器人具备限制成员/移除成员/删除消息权限"
                 )
     finally:
         await bot.session.close()

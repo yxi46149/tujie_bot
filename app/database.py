@@ -62,6 +62,7 @@ class GroupLotteryCreateOutcome:
     draw_mode: str = ""
     target_participants: int | None = None
     draw_at: str | None = None
+    entry_cost: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +73,8 @@ class GroupLotteryJoinOutcome:
     target_participants: int | None = None
     should_draw: bool = False
     previous_feedback_message_id: int | None = None
+    entry_cost: int = 0
+    points: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +98,7 @@ class GroupLotteryDrawOutcome:
     participant_count: int = 0
     winner_count: int = 0
     stock: int = 0
+    entry_cost: int = 0
     winners: tuple[GroupLotteryWinner, ...] = ()
 
 
@@ -279,6 +283,7 @@ class Database:
                     points_delta INTEGER NOT NULL DEFAULT 0,
                     product_id INTEGER,
                     winner_count INTEGER NOT NULL CHECK(winner_count > 0),
+                    entry_cost INTEGER NOT NULL DEFAULT 0 CHECK(entry_cost >= 0),
                     draw_mode TEXT NOT NULL DEFAULT 'manual'
                         CHECK(draw_mode IN ('manual', 'time', 'count')),
                     target_participants INTEGER,
@@ -305,6 +310,8 @@ class Database:
                     user_id INTEGER NOT NULL,
                     username TEXT,
                     first_name TEXT NOT NULL DEFAULT '',
+                    points_spent INTEGER NOT NULL DEFAULT 0 CHECK(points_spent >= 0),
+                    refunded_at TEXT,
                     created_at TEXT NOT NULL,
                     PRIMARY KEY(lottery_id, user_id),
                     FOREIGN KEY(lottery_id) REFERENCES group_lotteries(id),
@@ -368,6 +375,15 @@ class Database:
                     "target_participants": "INTEGER",
                     "draw_at": "TEXT",
                     "last_feedback_message_id": "INTEGER",
+                    "entry_cost": "INTEGER NOT NULL DEFAULT 0",
+                },
+            )
+            await self._ensure_columns(
+                db,
+                "group_lottery_participants",
+                {
+                    "points_spent": "INTEGER NOT NULL DEFAULT 0",
+                    "refunded_at": "TEXT",
                 },
             )
             await self._ensure_columns(
@@ -754,6 +770,48 @@ class Database:
             await db.commit()
             return "ok"
 
+    async def expire_human_verification(
+        self, chat_id: int, user_id: int, token: str
+    ) -> str:
+        now = utc_now()
+        async with self.connection() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            row = await (
+                await db.execute(
+                    """
+                    SELECT token, status, expires_at
+                    FROM human_verifications
+                    WHERE chat_id = ? AND user_id = ?
+                    """,
+                    (chat_id, user_id),
+                )
+            ).fetchone()
+            if not row:
+                await db.rollback()
+                return "not_found"
+            if not compare_digest(str(row["token"]), token):
+                await db.rollback()
+                return "invalid_token"
+
+            status = str(row["status"])
+            if status != "pending":
+                await db.rollback()
+                return status
+            if str(row["expires_at"]) > now:
+                await db.rollback()
+                return "pending"
+
+            await db.execute(
+                """
+                UPDATE human_verifications
+                SET status = 'expired'
+                WHERE chat_id = ? AND user_id = ? AND status = 'pending'
+                """,
+                (chat_id, user_id),
+            )
+            await db.commit()
+            return "expired"
+
     async def list_lottery_prizes(
         self, active_only: bool = True
     ) -> list[aiosqlite.Row]:
@@ -1022,12 +1080,13 @@ class Database:
         draw_mode: str = "manual",
         target_participants: int | None = None,
         draw_at: str | None = None,
+        entry_cost: int = 0,
     ) -> GroupLotteryCreateOutcome:
         title = title.strip()
         prize_type = prize_type.strip().lower()
         trigger_text = trigger_text.strip()
         draw_mode = draw_mode.strip().lower()
-        if not title or prize_value <= 0 or winner_count <= 0:
+        if not title or prize_value <= 0 or winner_count <= 0 or entry_cost < 0:
             return GroupLotteryCreateOutcome(status="invalid")
         if draw_mode not in {"manual", "time", "count"}:
             return GroupLotteryCreateOutcome(status="invalid")
@@ -1125,9 +1184,9 @@ class Database:
                 """
                 INSERT INTO group_lotteries(
                     chat_id, created_by, title, trigger_text, prize_type,
-                    points_delta, product_id, winner_count, draw_mode,
+                    points_delta, product_id, winner_count, entry_cost, draw_mode,
                     target_participants, draw_at, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     chat_id,
@@ -1138,6 +1197,7 @@ class Database:
                     points_delta,
                     product_id,
                     winner_count,
+                    entry_cost,
                     draw_mode,
                     target_participants,
                     draw_at,
@@ -1154,6 +1214,7 @@ class Database:
                 draw_mode=draw_mode,
                 target_participants=target_participants,
                 draw_at=draw_at,
+                entry_cost=entry_cost,
             )
 
     async def set_group_lottery_message(
@@ -1268,14 +1329,78 @@ class Database:
 
     async def cancel_group_lottery(self, lottery_id: int) -> bool:
         async with self.connection() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            lottery = await (
+                await db.execute(
+                    """
+                    SELECT entry_cost
+                    FROM group_lotteries
+                    WHERE id = ? AND status = 'pending'
+                    """,
+                    (lottery_id,),
+                )
+            ).fetchone()
+            if not lottery:
+                await db.rollback()
+                return False
+            now = utc_now()
             cursor = await db.execute(
                 """
                 UPDATE group_lotteries
                 SET status = 'cancelled', drawn_at = ?
                 WHERE id = ? AND status = 'pending'
                 """,
-                (utc_now(), lottery_id),
+                (now, lottery_id),
             )
+            if cursor.rowcount == 1 and int(lottery["entry_cost"] or 0) > 0:
+                participants = list(
+                    await (
+                        await db.execute(
+                            """
+                            SELECT user_id, points_spent
+                            FROM group_lottery_participants
+                            WHERE lottery_id = ?
+                              AND points_spent > 0
+                              AND refunded_at IS NULL
+                            """,
+                            (lottery_id,),
+                        )
+                    ).fetchall()
+                )
+                for participant in participants:
+                    user_id = int(participant["user_id"])
+                    points_spent = int(participant["points_spent"])
+                    await db.execute(
+                        """
+                        UPDATE users
+                        SET points = points + ?, updated_at = ?
+                        WHERE user_id = ?
+                        """,
+                        (points_spent, now, user_id),
+                    )
+                    await db.execute(
+                        """
+                        INSERT INTO point_transactions(
+                            user_id, delta, reason, created_at
+                        ) VALUES (?, ?, ?, ?)
+                        """,
+                        (
+                            user_id,
+                            points_spent,
+                            f"group_lottery_entry_refund:{lottery_id}",
+                            now,
+                        ),
+                    )
+                await db.execute(
+                    """
+                    UPDATE group_lottery_participants
+                    SET refunded_at = ?
+                    WHERE lottery_id = ?
+                      AND points_spent > 0
+                      AND refunded_at IS NULL
+                    """,
+                    (now, lottery_id),
+                )
             await db.commit()
             return cursor.rowcount == 1
 
@@ -1293,7 +1418,7 @@ class Database:
                 await db.execute(
                     """
                     SELECT title, status, draw_mode, target_participants,
-                           last_feedback_message_id
+                           last_feedback_message_id, entry_cost
                     FROM group_lotteries WHERE id = ?
                     """,
                     (lottery_id,),
@@ -1313,6 +1438,7 @@ class Database:
                 if lottery["target_participants"] is not None
                 else None
             )
+            entry_cost = int(lottery["entry_cost"] or 0)
             previous_feedback_message_id = (
                 int(lottery["last_feedback_message_id"])
                 if lottery["last_feedback_message_id"] is not None
@@ -1345,6 +1471,7 @@ class Database:
                     title=str(lottery["title"]),
                     participant_count=existing_count,
                     target_participants=target_participants,
+                    entry_cost=entry_cost,
                 )
             if (
                 lottery["draw_mode"] == "count"
@@ -1357,15 +1484,58 @@ class Database:
                     title=str(lottery["title"]),
                     participant_count=existing_count,
                     target_participants=target_participants,
+                    entry_cost=entry_cost,
                 )
+            current_points = 0
+            if entry_cost > 0:
+                user = await (
+                    await db.execute(
+                        "SELECT points FROM users WHERE user_id = ?", (user_id,)
+                    )
+                ).fetchone()
+                current_points = int(user["points"]) if user else 0
+                if current_points < entry_cost:
+                    await db.rollback()
+                    return GroupLotteryJoinOutcome(
+                        status="insufficient_points",
+                        title=str(lottery["title"]),
+                        participant_count=existing_count,
+                        target_participants=target_participants,
+                        entry_cost=entry_cost,
+                        points=current_points,
+                    )
             cursor = await db.execute(
                 """
                 INSERT OR IGNORE INTO group_lottery_participants(
-                    lottery_id, user_id, username, first_name, created_at
-                ) VALUES (?, ?, ?, ?, ?)
+                    lottery_id, user_id, username, first_name,
+                    points_spent, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (lottery_id, user_id, username, first_name, now),
+                (lottery_id, user_id, username, first_name, entry_cost, now),
             )
+            if cursor.rowcount == 1 and entry_cost > 0:
+                current_points -= entry_cost
+                await db.execute(
+                    """
+                    UPDATE users
+                    SET points = points - ?, updated_at = ?
+                    WHERE user_id = ?
+                    """,
+                    (entry_cost, now, user_id),
+                )
+                await db.execute(
+                    """
+                    INSERT INTO point_transactions(
+                        user_id, delta, reason, created_at
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        user_id,
+                        -entry_cost,
+                        f"group_lottery_entry_cost:{lottery_id}",
+                        now,
+                    ),
+                )
             count_row = await (
                 await db.execute(
                     """
@@ -1384,12 +1554,16 @@ class Database:
                     title=str(lottery["title"]),
                     participant_count=participant_count,
                     target_participants=target_participants,
+                    entry_cost=entry_cost,
+                    points=current_points,
                 )
             return GroupLotteryJoinOutcome(
                 status="ok",
                 title=str(lottery["title"]),
                 participant_count=participant_count,
                 target_participants=target_participants,
+                entry_cost=entry_cost,
+                points=current_points,
                 should_draw=bool(
                     lottery["draw_mode"] == "count"
                     and target_participants is not None
@@ -1423,7 +1597,9 @@ class Database:
                 return GroupLotteryDrawOutcome(
                     status=str(lottery["status"]),
                     title=str(lottery["title"]),
+                    entry_cost=int(lottery["entry_cost"] or 0),
                 )
+            entry_cost = int(lottery["entry_cost"] or 0)
 
             participants = list(
                 await (
@@ -1445,6 +1621,7 @@ class Database:
                     status="no_participants",
                     title=str(lottery["title"]),
                     participant_count=0,
+                    entry_cost=entry_cost,
                 )
 
             winner_count = min(int(lottery["winner_count"]), participant_count)
@@ -1469,6 +1646,7 @@ class Database:
                         prize_name=prize_name,
                         participant_count=participant_count,
                         winner_count=winner_count,
+                        entry_cost=entry_cost,
                     )
                 stock_row = await (
                     await db.execute(
@@ -1491,6 +1669,7 @@ class Database:
                         participant_count=participant_count,
                         winner_count=winner_count,
                         stock=stock,
+                        entry_cost=entry_cost,
                     )
 
             remaining = participants[:]
@@ -1543,6 +1722,7 @@ class Database:
                             prize_name=prize_name,
                             participant_count=participant_count,
                             winner_count=winner_count,
+                            entry_cost=entry_cost,
                         )
                     card_id = int(card["id"])
                     code = str(card["code"])
@@ -1557,9 +1737,9 @@ class Database:
                         """
                         INSERT INTO redemptions(
                             user_id, product_id, card_id, points_spent, created_at
-                        ) VALUES (?, ?, ?, 0, ?)
+                        ) VALUES (?, ?, ?, ?, ?)
                         """,
-                        (user_id, product_id, card_id, now),
+                        (user_id, product_id, card_id, entry_cost, now),
                     )
 
                 await db.execute(
@@ -1609,6 +1789,7 @@ class Database:
                 points_delta=points_delta,
                 participant_count=participant_count,
                 winner_count=winner_count,
+                entry_cost=entry_cost,
                 winners=tuple(winner_results),
             )
 
